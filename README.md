@@ -8,7 +8,7 @@
 | ------------- | ---------------------------------------------------------- | -------: | ------: | -------------------------------------- |
 | `projectId`   | `string` (Guid)                                            |       ✅ |       — | Your Metriox project id                |
 | `botId`       | `string` (Guid)                                            |       ✅ |       — | Your bot id                            |
-| `auth`        | `() => ({statement, signature}) \| {statement, signature}` |       ✅ |       — | Telegram auth payload provider         |
+| `auth`        | `() => ({initData}) \| {initData}`                         |       ✅ |       — | Telegram auth payload provider         |
 | `auto`        | `boolean \| object`                                        |       ❌ | `false` | Enable automatic tracking              |
 | `flushMs`     | `number`                                                   |       ❌ |  `5000` | Flush interval in ms                   |
 | `maxBatch`    | `number`                                                   |       ❌ |    `20` | Max events per request                 |
