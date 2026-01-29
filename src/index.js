@@ -20,10 +20,10 @@
   const DEFAULTS = {
     flushMs: 5000,
     maxBatch: 20,
-    maxQueue: 500, // cap in-memory queue
+    maxQueue: 500,
     retryBaseMs: 400,
     retryCount: 2,
-    auto: false, // false | true | { page, nav, clicks, forms, errors }
+    auto: false,
   };
 
   // =========================
@@ -34,22 +34,14 @@
   }
 
   function uuid() {
-    // Prefer crypto.randomUUID; fallback is deterministic enough for client-side IDs
     return crypto?.randomUUID?.() ?? ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16));
   }
 
   function clampString(value, maxLen) {
     if (typeof value !== "string") return value;
-    if (value.length <= maxLen) return value;
-    return value.slice(0, maxLen);
+    return value.length <= maxLen ? value : value.slice(0, maxLen);
   }
 
-  /**
-   * Split props into DTO fields:
-   * - PropsString: string (and fallback JSON/stringified values)
-   * - PropsLong: safe integers
-   * - PropsBool: booleans
-   */
   function splitProps(props) {
     const s = {};
     const l = {};
@@ -63,19 +55,16 @@
         s[k] = clampString(v, 2048);
         continue;
       }
-
       if (typeof v === "boolean") {
         b[k] = v;
         continue;
       }
-
       if (typeof v === "number") {
         if (Number.isInteger(v) && Number.isSafeInteger(v)) l[k] = v;
         else s[k] = clampString(String(v), 2048);
         continue;
       }
 
-      // objects/arrays -> JSON string (best effort)
       try {
         s[k] = clampString(JSON.stringify(v), 2048);
       } catch {
@@ -91,17 +80,9 @@
   }
 
   function mergeAuto(auto) {
-    if (auto === true) {
-      return { page: true, nav: true, clicks: true, forms: true, errors: true };
-    }
+    if (auto === true) return { page: true, nav: true, clicks: true, forms: true, errors: true };
     if (!auto) return { page: false, nav: false, clicks: false, forms: false, errors: false };
-    return {
-      page: !!auto.page,
-      nav: !!auto.nav,
-      clicks: !!auto.clicks,
-      forms: !!auto.forms,
-      errors: !!auto.errors,
-    };
+    return { page: !!auto.page, nav: !!auto.nav, clicks: !!auto.clicks, forms: !!auto.forms, errors: !!auto.errors };
   }
 
   // =========================
@@ -116,7 +97,7 @@
   }
 
   async function sendRequest(body, retryCount, retryBaseMs) {
-    // ✅ Only beacon on same-origin
+    // Only beacon on same-origin to avoid CORS credential quirks
     if (isSameOrigin(ENDPOINT)) {
       try {
         if (navigator.sendBeacon) {
@@ -127,7 +108,6 @@
       } catch {}
     }
 
-    // fetch path (explicitly non-credentialed)
     for (let attempt = 0; attempt <= retryCount; attempt++) {
       try {
         const res = await fetch(ENDPOINT, {
@@ -135,7 +115,7 @@
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
           keepalive: true,
-          credentials: "omit", // ✅
+          credentials: "omit",
         });
         if (res.ok) return true;
       } catch {}
@@ -145,19 +125,16 @@
   }
 
   // =========================
-  // Auto instrumentation (plugin)
-  // Returns cleanup() function
+  // Auto instrumentation
   // =========================
   function attachAuto(client, autoOptions) {
     const enabled = mergeAuto(autoOptions);
     const cleanups = [];
 
-    // page view
     if (enabled.page) {
       client.page("page_view", { path: location.pathname + location.search, title: document.title });
     }
 
-    // navigation tracking (pushState + popstate)
     if (enabled.nav) {
       const origPushState = history.pushState;
 
@@ -179,53 +156,35 @@
       });
     }
 
-    // clicks: only elements with data-mx
     if (enabled.clicks) {
       const onClick = (e) => {
         const el = e.target?.closest?.("[data-mx]");
         if (!el) return;
-        client.interaction("click", {
-          mx: el.getAttribute("data-mx") || "",
-          tag: el.tagName,
-          id: el.id || "",
-        });
+        client.interaction("click", { mx: el.getAttribute("data-mx") || "", tag: el.tagName, id: el.id || "" });
       };
 
       document.addEventListener("click", onClick, true);
       cleanups.push(() => document.removeEventListener("click", onClick, true));
     }
 
-    // forms
     if (enabled.forms) {
       const onSubmit = (e) => {
         const form = e.target;
         if (!(form instanceof HTMLFormElement)) return;
-        client.interaction("form_submit", {
-          formId: form.id || "",
-          method: form.method || "",
-          action: form.action || "",
-        });
+        client.interaction("form_submit", { formId: form.id || "", method: form.method || "", action: form.action || "" });
       };
 
       document.addEventListener("submit", onSubmit, true);
       cleanups.push(() => document.removeEventListener("submit", onSubmit, true));
     }
 
-    // errors
     if (enabled.errors) {
       const onError = (e) => {
-        client.track("error_unhandled", {
-          message: e.message || "",
-          source: e.filename || "",
-          line: e.lineno || 0,
-          col: e.colno || 0,
-        });
+        client.track("error_unhandled", { message: e.message || "", source: e.filename || "", line: e.lineno || 0, col: e.colno || 0 });
       };
 
       const onRejection = (e) => {
-        client.track("promise_rejection", {
-          message: String(e.reason?.message || e.reason || ""),
-        });
+        client.track("promise_rejection", { message: String(e.reason?.message || e.reason || "") });
       };
 
       window.addEventListener("error", onError);
@@ -241,9 +200,7 @@
       for (const fn of cleanups) {
         try {
           fn();
-        } catch {
-          // ignore
-        }
+        } catch {}
       }
     };
   }
@@ -252,8 +209,12 @@
   // Client init
   // =========================
   function init(config) {
-    if (!config?.projectId || !config?.botId) {
-      throw new Error("projectId and botId required");
+    if (!config?.projectId || !config?.botId) throw new Error("projectId and botId required");
+
+    // IMPORTANT: TelegramBotId is NOT available from Telegram.WebApp JS.
+    // You must pass it from your app config/DB.
+    if (typeof config.telegramBotId !== "number" || !Number.isFinite(config.telegramBotId) || config.telegramBotId <= 0) {
+      throw new Error("telegramBotId (numeric) is required for WebApp auth verification");
     }
 
     const opts = {
@@ -268,7 +229,9 @@
     const state = {
       projectId: config.projectId,
       botId: config.botId,
-      auth: config.auth, // function | object
+      telegramBotId: config.telegramBotId,
+      // auth: optional override. If not provided, uses Telegram.WebApp.initData.
+      auth: config.auth,
       queue: [],
       timer: null,
       flushing: false,
@@ -276,7 +239,6 @@
       cleanupFns: [],
     };
 
-    // add sdk info to all events
     function baseProps(extra) {
       const p = Object.assign({}, extra);
       p.sdk = SDK_NAME;
@@ -285,9 +247,7 @@
     }
 
     function scheduleFlush() {
-      if (!state.alive) return;
-      if (state.timer) return;
-
+      if (!state.alive || state.timer) return;
       state.timer = setTimeout(() => {
         state.timer = null;
         flush();
@@ -297,7 +257,6 @@
     function enqueue(evt) {
       if (!state.alive) return;
 
-      // cap queue; drop oldest
       if (state.queue.length >= opts.maxQueue) {
         state.queue.splice(0, state.queue.length - opts.maxQueue + 1);
       }
@@ -309,36 +268,43 @@
     }
 
     function pushEvent(eventType, eventName, props, text) {
-      const evt = {
+      enqueue({
         EventId: uuid(),
         EventType: String(eventType),
         EventName: String(eventName),
         EventDate: new Date().toISOString(),
         Text: text,
         ...splitProps(baseProps(props)),
-      };
-      enqueue(evt);
+      });
+    }
+
+    async function resolveInitData() {
+      // If caller provides auth() override, use it.
+      // Otherwise take Telegram.WebApp.initData as-is.
+      if (typeof state.auth === "function") {
+        const v = await state.auth();
+        return v?.initData ?? "";
+      }
+      if (state.auth && typeof state.auth === "object") {
+        return state.auth.initData ?? "";
+      }
+      return global.Telegram?.WebApp?.initData ?? "";
     }
 
     async function flush() {
-      if (!state.alive) return;
-      if (state.flushing) return;
-      if (!state.queue.length) return;
-
+      if (!state.alive || state.flushing || !state.queue.length) return;
       state.flushing = true;
 
       try {
-        // batch
         const events = state.queue.splice(0, opts.maxBatch);
-
-        const auth = typeof state.auth === "function" ? await state.auth() : state.auth || {};
+        const initData = await resolveInitData();
 
         const body = {
           ProjectId: state.projectId,
           BotId: state.botId,
           Auth: {
-            Statement: auth.statement || "",
-            Signature: auth.signature || "",
+            TelegramBotId: state.telegramBotId,
+            InitData: initData || "",
           },
           Events: events,
         };
@@ -346,11 +312,9 @@
         const ok = await sendRequest(body, opts.retryCount, opts.retryBaseMs);
 
         if (!ok) {
-          // put failed events back in front
           state.queue = events.concat(state.queue);
           scheduleFlush();
         } else if (state.queue.length) {
-          // if more queued, flush soon
           scheduleFlush();
         }
       } finally {
@@ -358,46 +322,35 @@
       }
     }
 
-    // PUBLIC API
     const client = {
-      /** Custom event: track("product_view", { ... }) => EventType=custom, EventName=custom:product_view */
       track(name, props, options) {
-        pushEvent("custom", `custom:${name}`, props, options?.text);
+        pushEvent("custom", name, props, options?.text);
       },
-      /** Page events: page("page_view" | "navigation", props) */
       page(name, props) {
         pushEvent("page", name, props);
       },
-      /** Interaction events: interaction("click" | "form_submit", props) */
       interaction(name, props) {
         pushEvent("interaction", name, props);
       },
       flush,
       shutdown() {
         state.alive = false;
-
         if (state.timer) clearTimeout(state.timer);
         state.timer = null;
 
-        // cleanup auto listeners + visibility listener
         for (const fn of state.cleanupFns) {
           try {
             fn();
-          } catch {
-            // ignore
-          }
+          } catch {}
         }
         state.cleanupFns = [];
       },
     };
 
-    // Auto instrumentation (optional)
     if (opts.auto) {
-      const cleanupAuto = attachAuto(client, opts.auto);
-      state.cleanupFns.push(cleanupAuto);
+      state.cleanupFns.push(attachAuto(client, opts.auto));
     }
 
-    // flush when going to background
     const onVis = () => {
       if (document.visibilityState === "hidden") client.flush();
     };

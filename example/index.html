@@ -1,16 +1,21 @@
+<!-- @format -->
+
 <!doctype html>
 <html>
-  <head><meta charset="utf-8" /></head>
+  <head>
+    <meta charset="utf-8" />
+  </head>
   <body>
     <button data-mx="buy_now">Buy</button>
 
     <script src="../dist/metriox-tg-webapp.min.js"></script>
     <script>
       const mx = MetrioxTG.init({
-        projectId: "019bf5c6-5bd2-7865-b0ef-c36fa16a0697",
-        botId: "019bf5c6-b858-7e31-8979-521590ce5d58",
-        auth: () => ({ statement: "test", signature: "test" }),
-        auto: true
+        projectId: "<YOUR_PROJECT_ID>",
+        botId: "<YOUR_BOT_ID>",
+        telegramBotId: 1234567890,
+        auth: () => ({ initData: window.Telegram?.WebApp?.initData || "" }),
+        auto: true,
       });
 
       mx.track("hello", { x: 1, ok: true, s: "test" });
