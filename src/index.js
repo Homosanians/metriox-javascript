@@ -127,6 +127,7 @@
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
           keepalive: true,
+          credentials: "omit", // to pass CORS preflight
         });
         if (res.ok) return true;
       } catch {
