@@ -1,12 +1,12 @@
 {
-  "name": "bot-analytics-web-sdk",
+  "name": "metriox-javascript",
   "version": "0.1.0",
-  "description": "Metriox Telegram WebApp SDK",
+  "description": "Metriox SDK",
   "license": "ISC",
-  "author": "Alexander Emelyanov @homosanians",
+  "author": "Alexander Emelyanov",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Homosanians/bot-analytics-web-sdk.git"
+    "url": "git+https://github.com/Homosanians/metriox-javascript/.git"
   },
   "type": "module",
   "exports": {
