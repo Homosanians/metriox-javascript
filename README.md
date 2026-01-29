@@ -24,11 +24,9 @@
   const mx = window.MetrioxTG.init({
     projectId: "<YOUR_PROJECT_ID>",
     botId: "<YOUR_BOT_ID>",
+    telegramBotId: <YOUR_TELEGRAM_BOT_ID>,
 
-    auth: () => ({
-      statement: window.Telegram?.WebApp?.initData ?? "",
-      signature: window.Telegram?.WebApp?.initDataUnsafe?.hash ?? ""
-    }),
+    auth: () => ({ initData: window.Telegram?.WebApp?.initData || "" }),
 
     auto: true
   });
