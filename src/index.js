@@ -107,19 +107,27 @@
   // =========================
   // Transport
   // =========================
-  async function sendRequest(body, retryCount, retryBaseMs) {
-    // First, try sendBeacon (best effort). If it queues successfully, we call it "ok".
+  function isSameOrigin(url) {
     try {
-      if (navigator.sendBeacon) {
-        const blob = new Blob([JSON.stringify(body)], { type: "application/json" });
-        const ok = navigator.sendBeacon(ENDPOINT, blob);
-        if (ok) return true;
-      }
+      return new URL(url, location.href).origin === location.origin;
     } catch {
-      // ignore, fallback to fetch
+      return false;
+    }
+  }
+
+  async function sendRequest(body, retryCount, retryBaseMs) {
+    // ✅ Only beacon on same-origin
+    if (isSameOrigin(ENDPOINT)) {
+      try {
+        if (navigator.sendBeacon) {
+          const blob = new Blob([JSON.stringify(body)], { type: "application/json" });
+          const ok = navigator.sendBeacon(ENDPOINT, blob);
+          if (ok) return true;
+        }
+      } catch {}
     }
 
-    // Fallback: fetch with simple retry
+    // fetch path (explicitly non-credentialed)
     for (let attempt = 0; attempt <= retryCount; attempt++) {
       try {
         const res = await fetch(ENDPOINT, {
@@ -127,19 +135,12 @@
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
           keepalive: true,
-          credentials: "omit", // to pass CORS preflight
+          credentials: "omit", // ✅
         });
         if (res.ok) return true;
-      } catch {
-        // ignore and retry
-      }
-
-      if (attempt < retryCount) {
-        const wait = retryBaseMs * Math.pow(2, attempt);
-        await sleep(wait);
-      }
+      } catch {}
+      if (attempt < retryCount) await sleep(retryBaseMs * Math.pow(2, attempt));
     }
-
     return false;
   }
 
