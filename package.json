@@ -1,0 +1,37 @@
+{
+  "name": "bot-analytics-web-sdk",
+  "version": "0.1.0",
+  "description": "Metriox Telegram WebApp SDK",
+  "license": "ISC",
+  "author": "Alexander Emelyanov @homosanians",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Homosanians/bot-analytics-web-sdk.git"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.esm.js",
+      "default": "./dist/index.esm.js"
+    },
+    "./iife": "./dist/metriox-tg-webapp.min.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "dev": "node esbuild.config.mjs --watch",
+    "lint": "eslint .",
+    "test": "vitest",
+    "build": "esbuild src/index.js --bundle --format=iife --minify --outfile=dist/metriox-tg-webapp.min.js",
+    "build:debug": "esbuild src/index.js --bundle --format=iife --global-name=MetrioxTG --sourcemap --outfile=dist/metriox-tg-webapp.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.2",
+    "eslint": "^9.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^1.0.0"
+  }
+}
