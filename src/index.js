@@ -7,8 +7,7 @@
  * - Safe click tracking via [data-mx]
  */
 
-(function (global) {
-  "use strict";
+"use strict";
 
   // =========================
   // Constants / defaults
@@ -288,7 +287,7 @@
       if (state.auth && typeof state.auth === "object") {
         return state.auth.initData ?? "";
       }
-      return global.Telegram?.WebApp?.initData ?? "";
+      return globalThis.Telegram?.WebApp?.initData ?? "";
     }
 
     async function flush() {
@@ -360,5 +359,5 @@
     return client;
   }
 
-  global.MetrioxTG = { init };
-})(window);
+  globalThis.MetrioxTG = { init };
+  export { init };
