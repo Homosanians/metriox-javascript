@@ -19,6 +19,14 @@ await esbuild.build({
 
 await esbuild.build({
   ...common,
+  entryPoints: ["src/react/index.tsx"],
+  format: "esm",
+  outfile: "dist/react/index.esm.js",
+  external: ["react"],
+});
+
+await esbuild.build({
+  ...common,
   entryPoints: ["src/index.ts"],
   format: "iife",
   globalName: "MetrioxTG",
