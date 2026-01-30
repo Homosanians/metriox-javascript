@@ -27,6 +27,29 @@ describe("react integration", () => {
     tree.unmount();
   });
 
+  it("sync-initializes client so useMetriox can be used during render", () => {
+    // This consumer uses useMetriox during render (not in effect). Previously this would throw if provider
+    // only initialized in useEffect. We should initialize synchronously in browser to avoid that.
+    const mockClient: any = { track: vi.fn(), page: vi.fn(), interaction: vi.fn(), flush: vi.fn, shutdown: vi.fn };
+
+    function RenderConsumer() {
+      const c = useMetriox();
+      c.track('from-render');
+      return null;
+    }
+
+    let tree: any;
+    act(() => {
+      tree = create(
+        React.createElement(MetrioxProvider, { config: { projectId: 'p', botId: 'b', auth: () => ({ initData: '' }) } }, React.createElement(RenderConsumer))
+      );
+    });
+
+    // If useMetriox didn't throw, the inner component called track()
+    // Note: we can't access internal client easily here so we rely on not throwing.
+    tree.unmount();
+  });
+
   it("auto instrumentation captures clicks within provider subtree (DOM)", async () => {
     const mockClient: any = { track: vi.fn(), page: vi.fn(), interaction: vi.fn(), flush: vi.fn, shutdown: vi.fn };
 

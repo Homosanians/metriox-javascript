@@ -19,28 +19,67 @@ export interface MetrioxProviderProps {
 }
 
 export function MetrioxProvider({ client: clientProp, config, children, eventProperties, auto = false }: MetrioxProviderProps) {
-  const [client, setClient] = useState<MetrioxClient | null>(clientProp ?? null);
-  const clientRef = useRef<MetrioxClient | null>(clientProp ?? null);
+  // If a client is passed use it. Otherwise when running in the browser initialize SDK synchronously so
+  // consumers that call `useMetriox()` during initial render don't throw.
+  const createdClientRef = React.useRef(false);
+
+  const initialClient = ((): MetrioxClient | null => {
+    if (clientProp) return clientProp;
+    if (typeof window === "undefined") return null; // avoid initializing during SSR
+    if (!config) return null;
+    // sync init in browser
+    const c = sdkInit(config);
+    createdClientRef.current = true;
+    return c;
+  })();
+
+  const [client, setClient] = useState<MetrioxClient | null>(initialClient);
+  const clientRef = useRef<MetrioxClient | null>(initialClient ?? null);
   const containerRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     clientRef.current = client;
   }, [client]);
 
+  // If the consumer passes a `client` prop after mount, prefer it and clean up our created client if any.
   useEffect(() => {
     if (clientProp) {
+      if (createdClientRef.current && client && client.shutdown) {
+        try {
+          client.shutdown();
+        } catch {}
+        createdClientRef.current = false;
+      }
       setClient(clientProp);
       return;
     }
-    if (!config) return;
-    const c = sdkInit(config);
-    setClient(c);
-    return () => {
-      try {
-        c.shutdown && c.shutdown();
-      } catch {}
-    };
+
+    // If we didn't create a client synchronously, but config appears after mount, initialize then.
+    if (!client && config && typeof window !== "undefined") {
+      const c = sdkInit(config);
+      setClient(c);
+      createdClientRef.current = true;
+      return () => {
+        try {
+          c.shutdown && c.shutdown();
+        } catch {}
+      };
+    }
+
+    return;
   }, [clientProp, config]);
+
+  // Ensure we shutdown any client we created when the provider unmounts
+  useEffect(() => {
+    return () => {
+      if (createdClientRef.current && client && client.shutdown) {
+        try {
+          client.shutdown();
+        } catch {}
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // compute top-level event properties
   const topProps = useMemo(() => (typeof eventProperties === "function" ? eventProperties({}) : (eventProperties ?? {})), [eventProperties]);
