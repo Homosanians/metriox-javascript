@@ -34,15 +34,13 @@ describe("react integration", () => {
 
     function RenderConsumer() {
       const c = useMetriox();
-      c.track('from-render');
+      c.track("from-render");
       return null;
     }
 
     let tree: any;
     act(() => {
-      tree = create(
-        React.createElement(MetrioxProvider, { config: { projectId: 'p', botId: 'b', auth: () => ({ initData: '' }) } }, React.createElement(RenderConsumer))
-      );
+      tree = create(React.createElement(MetrioxProvider, { config: { projectId: "p", botId: "b", auth: () => ({ initData: "" }) } }, React.createElement(RenderConsumer)));
     });
 
     // If useMetriox didn't throw, the inner component called track()
