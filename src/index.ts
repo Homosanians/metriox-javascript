@@ -11,7 +11,6 @@ export type AutoOptions = boolean | AutoOptionObject;
 export interface Config {
   projectId: string;
   botId: string;
-  telegramBotId: number;
   // auth may be an object (sync) or a function that returns either an object or a Promise
   auth?: { initData?: string } | (() => { initData?: string } | Promise<{ initData?: string }>);
   flushMs?: number;
@@ -246,10 +245,6 @@ function attachAuto(client: MetrioxClient, autoOptions: AutoOptions) {
 export function init(config: Config): MetrioxClient {
   if (!config?.projectId || !config?.botId) throw new Error("projectId and botId required");
 
-  if (typeof config.telegramBotId !== "number" || !Number.isFinite(config.telegramBotId) || config.telegramBotId <= 0) {
-    throw new Error("telegramBotId (numeric) is required for WebApp auth verification");
-  }
-
   const opts = {
     flushMs: config.flushMs ?? DEFAULTS.flushMs,
     maxBatch: config.maxBatch ?? DEFAULTS.maxBatch,
@@ -262,7 +257,6 @@ export function init(config: Config): MetrioxClient {
   const state = {
     projectId: config.projectId,
     botId: config.botId,
-    telegramBotId: config.telegramBotId,
     auth: config.auth,
     queue: [] as any[],
     timer: null as any,
@@ -333,7 +327,6 @@ export function init(config: Config): MetrioxClient {
         ProjectId: state.projectId,
         BotId: state.botId,
         Auth: {
-          TelegramBotId: state.telegramBotId,
           InitData: initData || "",
         },
         Events: events,

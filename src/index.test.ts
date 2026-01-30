@@ -45,7 +45,7 @@ describe("init & transport", () => {
     const mockFetch = vi.fn().mockResolvedValue({ ok: true });
     (globalThis as any).fetch = mockFetch;
 
-    const c = init({ projectId: "p", botId: "b", telegramBotId: 1, auth: () => ({ initData: "xyz" }) });
+    const c = init({ projectId: "p", botId: "b", auth: () => ({ initData: "xyz" }) });
 
     c.track("evt", { hello: "world" });
 

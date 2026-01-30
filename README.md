@@ -24,7 +24,7 @@
   const mx = window.MetrioxTG.init({
     projectId: "<YOUR_PROJECT_ID>",
     botId: "<YOUR_BOT_ID>",
-    telegramBotId: <YOUR_TELEGRAM_BOT_ID>,
+
 
     auth: () => ({ initData: window.Telegram?.WebApp?.initData || "" }),
 
@@ -69,7 +69,7 @@ import { MetrioxProvider, Metriox, LogOnMount, LogOnChange, useLogEvent } from "
 
 function App() {
   return (
-    <MetrioxProvider config={{ projectId: "p", botId: "b", telegramBotId: 123, auth: () => ({ initData: "" }) }} eventProperties={{ app: "my-app" }}>
+    <MetrioxProvider config={{ projectId: "p", botId: "b", auth: () => ({ initData: "" }) }} eventProperties={{ app: "my-app" }}>
       <Main />
     </MetrioxProvider>
   );
@@ -98,7 +98,7 @@ import React from 'react';
 import type { Config } from 'metriox-javascript';
 import { MetrioxProvider, Metriox, useLogEvent } from 'metriox-javascript/react';
 
-const cfg: Config = { projectId: 'p', botId: 'b', telegramBotId: 123, auth: () => ({ initData: '' }) };
+const cfg: Config = { projectId: 'p', botId: 'b', auth: () => ({ initData: '' }) };
 
 <MetrioxProvider config={cfg} eventProperties={{ app: 'my-app' }}>
   <Metriox eventProperties={(inherited) => ({ ...inherited, scope: ['page'] })}>

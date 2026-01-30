@@ -8,8 +8,8 @@ describe("init singleton", () => {
   afterEach(() => resetInstanceForTests());
 
   it("initOnce returns same instance", () => {
-    const c1 = initOnce({ projectId: "p", botId: "b", telegramBotId: 1, auth: () => ({ initData: "" }) });
-    const c2 = initOnce({ projectId: "p", botId: "b", telegramBotId: 1, auth: () => ({ initData: "" }) });
+    const c1 = initOnce({ projectId: "p", botId: "b", auth: () => ({ initData: "" }) });
+    const c2 = initOnce({ projectId: "p", botId: "b", auth: () => ({ initData: "" }) });
     expect(c1).toBe(c2);
   });
 
