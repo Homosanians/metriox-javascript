@@ -56,4 +56,65 @@ describe("init & transport", () => {
     const calledBody = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(calledBody.Auth.InitData).toBe("xyz");
   });
+
+  it("client.track with failing storage adapter still sends events and doesn't throw", async () => {
+    const adapter = {
+      get(key: string) {
+        throw new Error("no storage");
+      },
+      set(key: string, value: string) {
+        throw new Error("no storage");
+      },
+    } as any;
+
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true });
+    (globalThis as any).fetch = mockFetch;
+
+    const c = init({ projectId: "p", botId: "b", auth: () => ({ initData: "" }), dedupe: { mode: "once", adapter } });
+
+    // should not throw
+    c.track("evt", { hello: "world" }, { dedupe: "once" });
+
+    // allow async microtasks then flush
+    await new Promise((r) => setTimeout(r, 0));
+    await c.flush();
+
+    expect(mockFetch).toHaveBeenCalled();
+    const calledBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(calledBody.Events.length).toBeGreaterThan(0);
+  });
+
+  it("clearDedupeKey removes dedupe key and allows resend", async () => {
+    const store = new Map<string, string>();
+    const adapter = {
+      get(key: string) {
+        return store.has(key) ? store.get(key)! : null;
+      },
+      set(key: string, value: string) {
+        store.set(key, value);
+      },
+      remove(key: string) {
+        store.delete(key);
+      },
+    } as any;
+
+    const { init } = await import("./index");
+    const c: any = init({ projectId: "p", botId: "b", auth: () => ({ initData: "" }), dedupe: { mode: "once", adapter } });
+
+    c.track("x");
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(Array.from(store.keys()).length).toBe(1);
+
+    // default dedupe key is `${projectId}:${name}` -> 'p:x'
+    await c.clearDedupeKey("p:x");
+
+    expect(Array.from(store.keys()).length).toBe(0);
+
+    // send again
+    c.track("x");
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(Array.from(store.keys()).length).toBe(1);
+  });
 });

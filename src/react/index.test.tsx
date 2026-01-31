@@ -92,6 +92,117 @@ describe("react integration", () => {
     tree.unmount();
   });
 
+  it("client.track honours dedupe: once", async () => {
+    const store = new Map<string, string>();
+    const adapter = {
+      get(key: string) {
+        return store.has(key) ? store.get(key)! : null;
+      },
+      set(key: string, value: string) {
+        store.set(key, value);
+      },
+    } as any;
+
+    const c = (await import("../index").then((m) => m.init({ projectId: "p", botId: "b", auth: () => ({ initData: "" }), dedupe: { mode: "once", adapter } }))) as any;
+
+    c.track("x");
+    // allow microtask
+    await new Promise((r) => setTimeout(r, 0));
+    c.track("x");
+    await new Promise((r) => setTimeout(r, 0));
+
+    const keys = Array.from(store.keys());
+    expect(keys.length).toBe(1);
+  });
+
+  it("LogOnMount with dedupe once only marks sent once across mounts", async () => {
+    const store = new Map<string, string>();
+    const adapter = {
+      get(key: string) {
+        return store.has(key) ? store.get(key)! : null;
+      },
+      set(key: string, value: string) {
+        store.set(key, value);
+      },
+    } as any;
+
+    const { init } = await import("../index");
+    const client = init({ projectId: "p", botId: "b", auth: () => ({ initData: "" }), dedupe: { mode: "once", adapter } });
+
+    const { rerender, unmount } = render(React.createElement(MetrioxProvider, { client }, React.createElement(LogOnMount, { eventType: "mount-event" })));
+
+    // allow async work
+    await new Promise((r) => setTimeout(r, 0));
+
+    // unmount and mount again
+    unmount();
+    render(React.createElement(MetrioxProvider, { client }, React.createElement(LogOnMount, { eventType: "mount-event" })));
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    const keys = Array.from(store.keys());
+    expect(keys.length).toBe(1);
+  });
+
+  it("LogOnMount with dedupe session only marks sent once across mounts (sessionStorage)", async () => {
+    sessionStorage.clear();
+
+    const { init } = await import("../index");
+    const client = init({ projectId: "p", botId: "b", auth: () => ({ initData: "" }), dedupe: { mode: "session" } });
+
+    const { rerender, unmount } = render(React.createElement(MetrioxProvider, { client }, React.createElement(LogOnMount, { eventType: "mount-event" })));
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    unmount();
+    render(React.createElement(MetrioxProvider, { client }, React.createElement(LogOnMount, { eventType: "mount-event" })));
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    // count sessionStorage dedupe keys
+    let count = 0;
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const k = sessionStorage.key(i) || "";
+      if (k.startsWith("mx:dedupe:")) count++;
+    }
+    expect(count).toBe(1);
+  });
+
+  it("clearDedupeKey allows LogOnMount to re-send after clearing", async () => {
+    const store = new Map<string, string>();
+    const adapter = {
+      get(key: string) {
+        return store.has(key) ? store.get(key)! : null;
+      },
+      set(key: string, value: string) {
+        store.set(key, value);
+      },
+      remove(key: string) {
+        store.delete(key);
+      },
+    } as any;
+
+    const { init } = await import("../index");
+    const client: any = init({ projectId: "p", botId: "b", auth: () => ({ initData: "" }), dedupe: { mode: "once", adapter } });
+
+    const { unmount } = render(React.createElement(MetrioxProvider, { client }, React.createElement(LogOnMount, { eventType: "mount-event" })));
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    // ensure dedupe key is set
+    expect(Array.from(store.keys()).length).toBe(1);
+
+    // clear key so subsequent mount will send again
+    await client.clearDedupeKey("p:mount-event");
+
+    unmount();
+    render(React.createElement(MetrioxProvider, { client }, React.createElement(LogOnMount, { eventType: "mount-event" })));
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(Array.from(store.keys()).length).toBe(1);
+  });
+
   it("instrument wrapper returns a function that logs", () => {
     const mockClient: any = { track: vi.fn(), page: vi.fn(), interaction: vi.fn(), flush: vi.fn, shutdown: vi.fn };
 
