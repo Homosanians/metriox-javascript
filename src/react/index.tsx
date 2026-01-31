@@ -210,38 +210,10 @@ export function Metriox({ eventProperties, children }: MetrioxProps) {
   return <EventContext.Provider value={merged}>{children}</EventContext.Provider>;
 }
 
-export type DedupeProp = boolean | "once" | "session" | { mode?: "once" | "session"; key?: string; ttlMs?: number };
-
-export function LogOnMount({ eventType, eventProperties, dedupe }: { eventType: string; eventProperties?: Record<string, any>; dedupe?: DedupeProp }) {
-  const client = useMetriox();
-  const inherited = useContext(EventContext) ?? {};
-
-  function evaluate(ep: EventProps | undefined) {
-    if (!ep) return {};
-    return typeof ep === "function" ? ep(inherited) : ep;
-  }
-
+export function LogOnMount({ eventType, eventProperties }: { eventType: string; eventProperties?: Record<string, any> }) {
+  const { logEvent } = useLogEvent();
   useEffect(() => {
-    if (!client) return;
-    const ev = Object.assign({}, inherited, evaluate(eventProperties));
-
-    // normalize dedupe prop
-    let opt: any = {};
-    if (dedupe) {
-      if (dedupe === true || dedupe === "once" || (dedupe as any).mode === "once") {
-        opt.dedupe = "once";
-      } else if (dedupe === "session" || (dedupe as any).mode === "session") {
-        opt.dedupe = "session";
-      }
-      if (typeof dedupe === "object") {
-        if ((dedupe as any).key) opt.dedupeKey = (dedupe as any).key;
-        if ((dedupe as any).ttlMs) opt.dedupeTtlMs = (dedupe as any).ttlMs;
-      }
-    }
-
-    try {
-      client.track(eventType, ev, opt);
-    } catch {}
+    logEvent(eventType, eventProperties);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return null;

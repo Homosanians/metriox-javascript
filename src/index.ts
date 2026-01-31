@@ -8,15 +8,6 @@
 export type AutoOptionObject = { page?: boolean; nav?: boolean; clicks?: boolean; forms?: boolean; errors?: boolean };
 export type AutoOptions = boolean | AutoOptionObject;
 
-import { StorageAdapter, LocalStorageAdapter, SessionStorageAdapter, NoopAdapter, makeKey, shouldSendOnce, markSent, PREFIX } from "./dedupe";
-
-export interface DedupeConfig {
-  mode?: "none" | "once" | "session";
-  adapter?: StorageAdapter;
-  prefix?: string;
-  defaultTtlMs?: number;
-}
-
 export interface Config {
   projectId: string;
   botId: string;
@@ -28,17 +19,14 @@ export interface Config {
   retryBaseMs?: number;
   retryCount?: number;
   auto?: AutoOptions;
-  dedupe?: boolean | DedupeConfig;
 }
 
 export interface MetrioxClient {
-  track(name: string, props?: Record<string, any>, options?: { text?: string; dedupe?: "none" | "once" | "session"; dedupeKey?: string; dedupeTtlMs?: number }): void;
+  track(name: string, props?: Record<string, any>, options?: { text?: string }): void;
   page(name: string, props?: Record<string, any>): void;
   interaction(name: string, props?: Record<string, any>): void;
   flush(): Promise<void>;
   shutdown(): void;
-  // Admin/testing helper: remove or expire a dedupe key so the event can be sent again
-  clearDedupeKey(key: string): Promise<void>;
 }
 
 // =========================
@@ -266,19 +254,6 @@ export function init(config: Config): MetrioxClient {
     auto: config.auto ?? DEFAULTS.auto,
   };
 
-  const dedupeFromConfig: DedupeConfig | undefined = (() => {
-    if (!config?.dedupe) return undefined;
-    if (config.dedupe === true) return { mode: "once" };
-    return config.dedupe as DedupeConfig;
-  })();
-
-  const dedupeAdapter: StorageAdapter = (() => {
-    if (!dedupeFromConfig) return NoopAdapter;
-    if (dedupeFromConfig.adapter) return dedupeFromConfig.adapter;
-    if (dedupeFromConfig.mode === "session") return SessionStorageAdapter;
-    return typeof window !== "undefined" ? LocalStorageAdapter : NoopAdapter;
-  })();
-
   const state = {
     projectId: config.projectId,
     botId: config.botId,
@@ -288,17 +263,7 @@ export function init(config: Config): MetrioxClient {
     flushing: false,
     alive: true,
     cleanupFns: [] as Array<() => void>,
-    // dedupe helpers
-    dedupe: {
-      mode: dedupeFromConfig?.mode ?? "none",
-      adapter: dedupeAdapter,
-      prefix: dedupeFromConfig?.prefix ?? PREFIX,
-      defaultTtlMs: dedupeFromConfig?.defaultTtlMs ?? 24 * 60 * 60 * 1000,
-    },
-    // in-memory guards to avoid duplicate sends within same runtime
-    sentLocal: new Set<string>(),
-    inflight: new Set<string>(),
-  } as any;
+  };
 
   function baseProps(extra?: Record<string, any>) {
     const p = Object.assign({}, extra);
@@ -382,44 +347,7 @@ export function init(config: Config): MetrioxClient {
 
   const client: MetrioxClient = {
     track(name, props, options) {
-      const dedupeOpt = options?.dedupe ?? state.dedupe.mode ?? "none";
-
-      if (!dedupeOpt || dedupeOpt === "none") {
-        pushEvent("custom", name, props, options?.text);
-        return;
-      }
-
-      const keyBase = options?.dedupeKey ?? `${state.projectId}:${name}`;
-      const key = makeKey(state.dedupe.prefix, keyBase);
-
-      // if we already marked it locally, skip
-      if (state.sentLocal.has(key)) return;
-
-      // if an in-flight check is running, skip to avoid dupes
-      if (state.inflight.has(key)) return;
-
-      state.inflight.add(key);
-
-      (async () => {
-        try {
-          const ttl = options?.dedupeTtlMs ?? state.dedupe.defaultTtlMs;
-          const adapter: StorageAdapter = state.dedupe.adapter ?? NoopAdapter;
-
-          const ok = await shouldSendOnce(adapter, key, ttl);
-          if (!ok) return;
-
-          // mark first (best-effort) then send
-          try {
-            await markSent(adapter, key, ttl);
-          } catch {}
-
-          state.sentLocal.add(key);
-
-          pushEvent("custom", name, props, options?.text);
-        } finally {
-          state.inflight.delete(key);
-        }
-      })();
+      pushEvent("custom", name, props, options?.text);
     },
     page(name, props) {
       pushEvent("page", name, props);
@@ -427,22 +355,6 @@ export function init(config: Config): MetrioxClient {
     interaction(name, props) {
       pushEvent("interaction", name, props);
     },
-
-    async clearDedupeKey(key: string) {
-      const fullKey = (key || "").startsWith(state.dedupe.prefix) ? key : makeKey(state.dedupe.prefix, key);
-      // clear in-memory guard
-      try {
-        state.sentLocal.delete(fullKey);
-        const adapter: StorageAdapter = state.dedupe.adapter ?? NoopAdapter;
-        if (typeof (adapter as any).remove === "function") {
-          await Promise.resolve((adapter as any).remove(fullKey));
-        } else {
-          // fallback: write an expired payload so shouldSendOnce will allow next send
-          await Promise.resolve(adapter.set(fullKey, JSON.stringify({ expiry: Date.now() - 1 })));
-        }
-      } catch {}
-    },
-
     flush,
     shutdown() {
       state.alive = false;
