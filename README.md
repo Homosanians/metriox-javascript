@@ -161,18 +161,17 @@ Example:
 
 ```js
 // Using global client
-const mx = MetrioxTG.init({ projectId: "p", botId: "b", auth: () => ({ initData: "" }) });
+const mx = MetrioxTG.init({ projectId: 'p', botId: 'b', auth: () => ({ initData: '' }) });
 // Remove stored dedupe key so the next mount or call will send again
-await mx.clearDedupeKey("p:app_open");
+await mx.clearDedupeKey('p:app_open');
 
 // In React (inside a component)
-import { useMetriox } from "metriox-javascript/react";
+import { useMetriox } from 'metriox-javascript/react';
 const client = useMetriox();
-await client.clearDedupeKey("p:app_open");
+await client.clearDedupeKey('p:app_open');
 ```
 
 Notes:
-
 - `clearDedupeKey` is asynchronous and best-effort; it will attempt to call the adapter's `remove` method if available, or write an expired value if not.
 - Intended for testing and admin workflows; avoid using it in regular app logic that would undermine once-only guarantees.
 
