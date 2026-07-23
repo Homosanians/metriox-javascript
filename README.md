@@ -40,6 +40,23 @@
 
 ---
 
+### Serializing an inline keyboard
+
+`serializeInlineKeyboard(markup)` turns a Bot API `InlineKeyboardMarkup` into the compact JSON Metriox stores at `$tg.inline_keyboard`, so the per-user conversation view can show which buttons a message offered and resolve a pressed callback back to its button label. Callback buttons keep their data, url buttons keep their url; other button kinds are skipped.
+
+```js
+import { serializeInlineKeyboard } from "metriox-javascript";
+
+serializeInlineKeyboard({
+  inline_keyboard: [[{ text: "Buy", callback_data: "buy" }, { text: "Docs", url: "https://metriox.com" }]],
+});
+// => '[{"t":"Buy","d":"buy"},{"t":"Docs","u":"https://metriox.com"}]'
+```
+
+Send the result as `tg.inline_keyboard` on a **platform-origin** Telegram message event (alongside `tg.from_is_bot: true` so it renders as a bot → user message) — typically server-side, since the Bot API never reports a bot's own sends and the WebApp `track()` path emits custom-origin events. Returns `null` when there is nothing to record.
+
+---
+
 ### React integration
 
 The package exports a React entry at `metriox-javascript/react`. This build marks `react` as a peer dependency — install React in your app.

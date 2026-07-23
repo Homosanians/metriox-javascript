@@ -119,6 +119,50 @@ export function mergeAuto(auto: AutoOptions) {
 }
 
 // =========================
+// Telegram inline keyboard
+// =========================
+export interface TgInlineButton {
+  text: string;
+  callback_data?: string;
+  url?: string;
+}
+
+export interface TgInlineKeyboardMarkup {
+  inline_keyboard: TgInlineButton[][];
+}
+
+/**
+ * Serializes a Telegram Bot API inline keyboard into the compact JSON string Metriox stores at
+ * `$tg.inline_keyboard`, so the per-user conversation view can show which buttons a message offered
+ * and resolve a pressed callback back to its button label.
+ *
+ * A callback button keeps its payload (`d`), a url button keeps its target (`u`); both keep their
+ * label (`t`). Other button kinds carry neither, so they are skipped. Returns `null` when there is
+ * nothing to record — omit the property in that case.
+ *
+ * Attach the result as `tg.inline_keyboard` on a *platform-origin* Telegram message event, alongside
+ * `tg.from_is_bot: true` (e.g. a Node bot reporting its own send). Note the WebApp `track()` path
+ * emits custom-origin events, which the ingest does not promote into the reserved `$tg` section.
+ */
+export function serializeInlineKeyboard(markup?: TgInlineKeyboardMarkup | null): string | null {
+  const rows = markup?.inline_keyboard;
+  if (!Array.isArray(rows)) return null;
+
+  const out: Array<{ t: string; d?: string; u?: string }> = [];
+  for (const row of rows) {
+    if (!Array.isArray(row)) continue;
+    for (const b of row) {
+      if (!b) continue;
+      if (b.callback_data) out.push({ t: b.text, d: b.callback_data });
+      else if (b.url) out.push({ t: b.text, u: b.url });
+      // other button kinds carry no callback_data or url to surface — skipped
+    }
+  }
+
+  return out.length ? JSON.stringify(out) : null;
+}
+
+// =========================
 // Transport
 // =========================
 function isSameOrigin(url: string) {
@@ -384,4 +428,4 @@ export function init(config: Config): MetrioxClient {
 }
 
 // expose global for legacy consumers
-(globalThis as any).MetrioxTG = { init };
+(globalThis as any).MetrioxTG = { init, serializeInlineKeyboard };

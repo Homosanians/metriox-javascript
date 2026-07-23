@@ -2,7 +2,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as sdk from "./index";
-import { splitProps, mergeAuto, init } from "./index";
+import { splitProps, mergeAuto, init, serializeInlineKeyboard } from "./index";
 
 console.log("sdk keys", Object.keys(sdk));
 
@@ -21,6 +21,39 @@ describe("helpers", () => {
     expect(mergeAuto(true)).toEqual({ page: true, nav: true, clicks: true, forms: true, errors: true });
     expect(mergeAuto(false)).toEqual({ page: false, nav: false, clicks: false, forms: false, errors: false });
     expect(mergeAuto({ page: true })).toEqual({ page: true, nav: false, clicks: false, forms: false, errors: false });
+  });
+});
+
+describe("serializeInlineKeyboard", () => {
+  it("captures callback payload and url with their kind, flattening rows in order", () => {
+    const json = serializeInlineKeyboard({
+      inline_keyboard: [
+        [
+          { text: "Buy", callback_data: "buy" },
+          { text: "Open", url: "https://x" },
+        ],
+        [{ text: "Next", callback_data: "n" }],
+      ],
+    });
+
+    expect(JSON.parse(json!)).toEqual([
+      { t: "Buy", d: "buy" },
+      { t: "Open", u: "https://x" },
+      { t: "Next", d: "n" },
+    ]);
+  });
+
+  it("skips buttons that carry neither callback_data nor url", () => {
+    const json = serializeInlineKeyboard({ inline_keyboard: [[{ text: "Share" }, { text: "Buy", callback_data: "b" }]] });
+
+    expect(JSON.parse(json!)).toEqual([{ t: "Buy", d: "b" }]);
+  });
+
+  it("returns null when there is nothing to record", () => {
+    expect(serializeInlineKeyboard(null)).toBeNull();
+    expect(serializeInlineKeyboard(undefined)).toBeNull();
+    expect(serializeInlineKeyboard({ inline_keyboard: [] })).toBeNull();
+    expect(serializeInlineKeyboard({ inline_keyboard: [[{ text: "Share" }]] })).toBeNull();
   });
 });
 
