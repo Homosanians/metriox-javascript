@@ -162,6 +162,119 @@ export function serializeInlineKeyboard(markup?: TgInlineKeyboardMarkup | null):
   return out.length ? JSON.stringify(out) : null;
 }
 
+/** One formatting span of a Telegram message, as the Bot API reports it. */
+export interface TgMessageEntity {
+  /** Bot-API token: `bold`, `italic`, `text_link`, `code`, `spoiler`, … */
+  type: string;
+  /** Start index in UTF-16 code units — the unit both Telegram and JavaScript use. */
+  offset: number;
+  length: number;
+  /** Target for `text_link` spans. */
+  url?: string;
+}
+
+/** Matches the backend cap: past a few dozen spans a message renders the same but the row keeps growing. */
+export const MAX_MESSAGE_ENTITIES = 64;
+
+/**
+ * Serializes a message's formatting spans into the compact JSON string Metriox stores at
+ * `$tg.entities`, so bold text, code and inline links render in the conversation view.
+ *
+ * Telegram never sends formatted text — it sends plain text plus these offset/length spans — so
+ * without them a message's formatting cannot be recovered at all, only counted. Attach the result as
+ * `tg.entities` on a *platform-origin* Telegram message event, the same way as
+ * {@link serializeInlineKeyboard}.
+ *
+ * Returns `null` when there is nothing to record, so an unformatted message carries no property.
+ */
+export function serializeMessageEntities(entities?: TgMessageEntity[] | null): string | null {
+  if (!Array.isArray(entities)) return null;
+
+  const out: Array<{ t: string; o: number; l: number; u?: string }> = [];
+  for (const e of entities) {
+    if (!e || !e.type || !(e.length > 0) || !(e.offset >= 0)) continue;
+    if (out.length === MAX_MESSAGE_ENTITIES) break;
+
+    out.push(e.url ? { t: e.type, o: e.offset, l: e.length, u: e.url } : { t: e.type, o: e.offset, l: e.length });
+  }
+
+  return out.length ? JSON.stringify(out) : null;
+}
+
+// =========================
+// Cross-producer event identity
+// =========================
+
+/**
+ * Keys that identify a Telegram event independently of who captured it. A MIRROR of the backend's
+ * `TelegramEventKeys`; the strings are a published contract — both sides must agree exactly or the
+ * same event captured twice becomes two rows.
+ *
+ * Note what is absent: `update_id`, and any bot identifier. `update_id` exists only in the Bot-API
+ * getUpdates/webhook stream — Metriox's MTProto worker has no equivalent, so a key built from it can
+ * never match. A bot identifier cannot appear because the server keys on its own internal bot id,
+ * which no SDK knows; uniqueness is already scoped per bot server-side.
+ *
+ * Chat ids must be the Bot-API convention (`-100…` for channels/supergroups, negative for basic
+ * groups), which is what the Bot API already gives you — pass them through unchanged.
+ */
+export const tgEventKeys = {
+  message: (chatId: number | string, messageId: number | string) => `tg:msg:${chatId}:${messageId}`,
+  messageEdit: (chatId: number | string, messageId: number | string, editUnixSeconds: number) =>
+    `tg:edit:${chatId}:${messageId}:${editUnixSeconds}`,
+  businessMessage: (chatId: number | string, messageId: number | string) => `tg:bizmsg:${chatId}:${messageId}`,
+  callbackQuery: (queryId: string) => `tg:cbq:${queryId}`,
+  inlineQuery: (queryId: string) => `tg:iq:${queryId}`,
+  chosenInlineResult: (userId: number | string, resultId: string) => `tg:isend:${userId}:${resultId}`,
+  preCheckoutQuery: (queryId: string) => `tg:pcq:${queryId}`,
+  shippingQuery: (queryId: string) => `tg:sq:${queryId}`,
+  reactions: (chatId: number | string, messageId: number | string) => `tg:react:${chatId}:${messageId}`,
+  pollVote: (chatId: number | string, pollId: string) => `tg:pollvote:${chatId}:${pollId}`,
+} as const;
+
+// Namespace bytes of the backend's DeterministicUuid. Every byte is repeated within its field, so
+// .NET's mixed-endian Guid.ToByteArray() layout and the RFC order coincide here — which is the only
+// reason this is reproducible outside .NET without emulating those quirks.
+const UUID5_NAMESPACE = new Uint8Array([
+  0x11, 0x11, 0x11, 0x11, 0x22, 0x22, 0x33, 0x33, 0x44, 0x44, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55,
+]);
+
+const hex = (b: number) => b.toString(16).padStart(2, "0");
+
+/**
+ * The event id for a key from {@link tgEventKeys}: UUID v5 (SHA-1) over the shared namespace, formatted
+ * the way .NET's `Guid` prints the same bytes.
+ *
+ * That last part is the subtle bit. `new Guid(byte[])` reads the first three groups as little-endian,
+ * so its string form reverses bytes 0-3, 4-5 and 6-7 relative to the hash. Emitting RFC-ordered hex
+ * here would parse server-side into a *different* Guid and silently never dedup, so the byte order is
+ * mirrored deliberately rather than left "standard".
+ *
+ * Async because it uses WebCrypto, which is the only SHA-1 available in both browsers and Node without
+ * a dependency. Requires a secure context in browsers (Telegram WebApps always are).
+ */
+export async function telegramEventId(key: string): Promise<string> {
+  const value = new TextEncoder().encode(key);
+
+  const data = new Uint8Array(UUID5_NAMESPACE.length + value.length);
+  data.set(UUID5_NAMESPACE, 0);
+  data.set(value, UUID5_NAMESPACE.length);
+
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-1", data));
+  const b = digest.slice(0, 16);
+
+  b[6] = (b[6] & 0x0f) | 0x50; // version 5
+  b[8] = (b[8] & 0x3f) | 0x80; // variant
+
+  const g1 = [b[3], b[2], b[1], b[0]].map(hex).join("");
+  const g2 = [b[5], b[4]].map(hex).join("");
+  const g3 = [b[7], b[6]].map(hex).join("");
+  const g4 = [b[8], b[9]].map(hex).join("");
+  const g5 = Array.from(b.slice(10, 16)).map(hex).join("");
+
+  return `${g1}-${g2}-${g3}-${g4}-${g5}`;
+}
+
 // =========================
 // Transport
 // =========================
@@ -428,4 +541,10 @@ export function init(config: Config): MetrioxClient {
 }
 
 // expose global for legacy consumers
-(globalThis as any).MetrioxTG = { init, serializeInlineKeyboard };
+(globalThis as any).MetrioxTG = {
+  init,
+  serializeInlineKeyboard,
+  serializeMessageEntities,
+  telegramEventId,
+  tgEventKeys,
+};
