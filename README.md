@@ -50,7 +50,7 @@ import { serializeInlineKeyboard } from "metriox-javascript";
 serializeInlineKeyboard({
   inline_keyboard: [[{ text: "Buy", callback_data: "buy" }, { text: "Docs", url: "https://metriox.com" }]],
 });
-// => '[{"t":"Buy","d":"buy"},{"t":"Docs","u":"https://metriox.com"}]'
+// => '[{"text":"Buy","callback_data":"buy"},{"text":"Docs","url":"https://metriox.com"}]'
 ```
 
 Send the result as `tg.inline_keyboard` on a **platform-origin** Telegram message event (alongside `tg.from_is_bot: true` so it renders as a bot → user message) — typically server-side, since the Bot API never reports a bot's own sends and the WebApp `track()` path emits custom-origin events. Returns `null` when there is nothing to record.

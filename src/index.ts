@@ -1,4 +1,4 @@
-/** @format
+﻿/** @format
  * MetrioxTG Web SDK (Telegram WebApp) - TypeScript
  */
 
@@ -70,7 +70,20 @@ function uuid() {
   });
 }
 
-function clampString(value: unknown, maxLen: number) {
+/**
+ * Longest string property value the ingest accepts, in characters. Mirrors the server's
+ * `PropsPolicy.MaxStringValueLen`; the server truncates past it and reports a `prop_value_truncated`
+ * warning, so clamping here only avoids sending bytes that would be dropped anyway.
+ *
+ * This was 2048 — half the server's limit, which made the SDK stricter than the contract it targets
+ * for no reason (flagged in the platform's own ingest-contract audit). It mattered for the compact
+ * `$tg` blobs: a fully formatted message can carry 64 entity spans, and those cross 2048 while
+ * staying well inside 4096. A clamped blob is invalid JSON, so the reader degrades to "no
+ * formatting" — silently.
+ */
+export const MAX_PROP_STRING_LEN = 4096;
+
+function clampString(value: unknown, maxLen: number = MAX_PROP_STRING_LEN) {
   if (typeof value !== "string") return value;
   return value.length <= maxLen ? value : value.slice(0, maxLen);
 }
@@ -85,7 +98,7 @@ export function splitProps(props?: Record<string, any>) {
     if (v == null) continue;
 
     if (typeof v === "string") {
-      s[k] = clampString(v, 2048);
+      s[k] = clampString(v);
       continue;
     }
     if (typeof v === "boolean") {
@@ -94,14 +107,14 @@ export function splitProps(props?: Record<string, any>) {
     }
     if (typeof v === "number") {
       if (Number.isInteger(v) && Number.isSafeInteger(v)) l[k] = v as number;
-      else s[k] = clampString(String(v), 2048);
+      else s[k] = clampString(String(v));
       continue;
     }
 
     try {
-      s[k] = clampString(JSON.stringify(v), 2048);
+      s[k] = clampString(JSON.stringify(v));
     } catch {
-      s[k] = clampString(String(v), 2048);
+      s[k] = clampString(String(v));
     }
   }
 
@@ -136,9 +149,13 @@ export interface TgInlineKeyboardMarkup {
  * `$tg.inline_keyboard`, so the per-user conversation view can show which buttons a message offered
  * and resolve a pressed callback back to its button label.
  *
- * A callback button keeps its payload (`d`), a url button keeps its target (`u`); both keep their
- * label (`t`). Other button kinds carry neither, so they are skipped. Returns `null` when there is
- * nothing to record — omit the property in that case.
+ * A callback button keeps its payload (`callback_data`), a url button keeps its target (`url`); both
+ * keep their label (`text`). Other button kinds carry neither, so they are skipped. Returns `null` when
+ * there is nothing to record — omit the property in that case.
+ *
+ * The keys are the Bot API's own `InlineKeyboardButton` field names, so the stored value reads as
+ * itself. They were single letters (`t`/`d`/`u`) before 2026-07-26 — Metriox still accepts that spelling
+ * on read, so an older SDK build keeps working, but new sends should use this one.
  *
  * Attach the result as `tg.inline_keyboard` on a *platform-origin* Telegram message event, alongside
  * `tg.from_is_bot: true` (e.g. a Node bot reporting its own send). Note the WebApp `track()` path
@@ -148,13 +165,13 @@ export function serializeInlineKeyboard(markup?: TgInlineKeyboardMarkup | null):
   const rows = markup?.inline_keyboard;
   if (!Array.isArray(rows)) return null;
 
-  const out: Array<{ t: string; d?: string; u?: string }> = [];
+  const out: Array<{ text: string; callback_data?: string; url?: string }> = [];
   for (const row of rows) {
     if (!Array.isArray(row)) continue;
     for (const b of row) {
       if (!b) continue;
-      if (b.callback_data) out.push({ t: b.text, d: b.callback_data });
-      else if (b.url) out.push({ t: b.text, u: b.url });
+      if (b.callback_data) out.push({ text: b.text, callback_data: b.callback_data });
+      else if (b.url) out.push({ text: b.text, url: b.url });
       // other button kinds carry no callback_data or url to surface — skipped
     }
   }
@@ -185,17 +202,24 @@ export const MAX_MESSAGE_ENTITIES = 64;
  * `tg.entities` on a *platform-origin* Telegram message event, the same way as
  * {@link serializeInlineKeyboard}.
  *
+ * Keys are the Bot API's own `MessageEntity` field names (`type`/`offset`/`length`/`url`); they were
+ * single letters (`t`/`o`/`l`/`u`) before 2026-07-26, which Metriox still reads.
+ *
  * Returns `null` when there is nothing to record, so an unformatted message carries no property.
  */
 export function serializeMessageEntities(entities?: TgMessageEntity[] | null): string | null {
   if (!Array.isArray(entities)) return null;
 
-  const out: Array<{ t: string; o: number; l: number; u?: string }> = [];
+  const out: Array<{ type: string; offset: number; length: number; url?: string }> = [];
   for (const e of entities) {
     if (!e || !e.type || !(e.length > 0) || !(e.offset >= 0)) continue;
     if (out.length === MAX_MESSAGE_ENTITIES) break;
 
-    out.push(e.url ? { t: e.type, o: e.offset, l: e.length, u: e.url } : { t: e.type, o: e.offset, l: e.length });
+    out.push(
+      e.url
+        ? { type: e.type, offset: e.offset, length: e.length, url: e.url }
+        : { type: e.type, offset: e.offset, length: e.length },
+    );
   }
 
   return out.length ? JSON.stringify(out) : null;

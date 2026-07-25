@@ -8,7 +8,10 @@ describe("serializeMessageEntities", () => {
         { type: "bold", offset: 0, length: 5 },
         { type: "text_link", offset: 6, length: 4, url: "https://metriox.com" },
       ]),
-    ).toBe('[{"t":"bold","o":0,"l":5},{"t":"text_link","o":6,"l":4,"u":"https://metriox.com"}]');
+    ).toBe(
+      '[{"type":"bold","offset":0,"length":5},' +
+        '{"type":"text_link","offset":6,"length":4,"url":"https://metriox.com"}]',
+    );
   });
 
   it("returns null when there is nothing to record", () => {
