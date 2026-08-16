@@ -1,0 +1,122 @@
+# Publishes metriox-javascript to npm.
+#
+# Authentication is npm Trusted Publishing (OIDC): GitHub mints a short-lived token and npm verifies
+# it came from this repository and this workflow file. There is no NPM_TOKEN secret to leak or
+# rotate. It requires a one-time setup on npmjs.com — see the checklist at the bottom of this file.
+#
+# The filename is part of that contract. Renaming this file breaks publishing until the trusted
+# publisher entry on npmjs.com is updated to match.
+
+name: Publish to npm
+
+on:
+  release:
+    types: [published]
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Publishing the same version twice is an error, and a GitHub Release that creates its own tag fires
+# both `release` and `push`. Serialising on the ref means the second trigger finds the version
+# already on the registry and stops cleanly, rather than racing the first to a failure.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    permissions:
+      # Required for OIDC. Without it npm cannot verify the publish came from here, and the
+      # provenance attestation cannot be signed.
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          # Writes the .npmrc pointing publishes at the public registry. No token is placed in it —
+          # the OIDC exchange supplies the credential at publish time.
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      # Trusted publishing needs a recent npm; the version bundled with Node 22 predates it.
+      - name: Use an npm that speaks OIDC
+        run: npm install -g npm@latest
+
+      - name: Install
+        run: npm ci
+
+      - name: Read package identity
+        id: pkg
+        run: |
+          echo "name=$(node -p "require('./package.json').name")" >> "$GITHUB_OUTPUT"
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      # A tag says which version this is meant to be; package.json says which version will actually
+      # be published. When they disagree someone forgot to bump, and publishing anyway ships the
+      # previous version under a new tag — silently, and unfixably, since npm versions are immutable.
+      - name: Check the tag matches package.json
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="${{ steps.pkg.outputs.version }}"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME implies version $TAG, but package.json is $PKG. Bump package.json or retag."
+            exit 1
+          fi
+          echo "Tag and package.json agree on $PKG."
+
+      # Makes the workflow idempotent: reruns, and the double trigger a tagged Release causes, end
+      # here instead of failing on an immutable version.
+      - name: Skip if this version is already on the registry
+        id: exists
+        run: |
+          NAME="${{ steps.pkg.outputs.name }}"
+          VERSION="${{ steps.pkg.outputs.version }}"
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "$NAME@$VERSION is already published; nothing to do."
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Deliberately not `npm run lint`: the repo has no ESLint config, so that script exits non-zero
+      # on a clean tree and would block every publish. Drop this note once a config exists.
+      - name: Typecheck
+        if: steps.exists.outputs.published == 'false'
+        run: npm run typecheck
+
+      - name: Test
+        if: steps.exists.outputs.published == 'false'
+        run: npm run test
+
+      # package.json has no prepublishOnly hook, so `npm publish` would ship whatever happens to be
+      # in dist/ — which on a clean checkout is nothing at all. Build explicitly.
+      - name: Build
+        if: steps.exists.outputs.published == 'false'
+        run: npm run build
+
+      # Surfaces the tarball's contents in the log before the version becomes immutable.
+      - name: Show what will be published
+        if: steps.exists.outputs.published == 'false'
+        run: npm publish --dry-run --access public
+
+      - name: Publish
+        if: steps.exists.outputs.published == 'false'
+        run: npm publish --access public
+# One-time setup on npmjs.com, without which every run fails at the publish step:
+#
+#   1. npmjs.com -> the metriox-javascript package -> Settings -> Trusted Publisher
+#   2. Publisher: GitHub Actions
+#      Organization or user: Homosanians
+#      Repository:           metriox-javascript
+#      Workflow filename:    publish.yml
+#      Environment:          (leave empty — this workflow does not use one)
+#
+# Provenance is attached automatically under trusted publishing, so the published package carries a
+# verifiable link back to this repository and the commit it was built from.
