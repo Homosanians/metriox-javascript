@@ -15,6 +15,7 @@
 | `maxQueue`    | `number`                           |       ❌ |   `500` | Max queued events in memory                      |
 | `retryCount`  | `number`                           |       ❌ |     `2` | Fetch retry attempts                             |
 | `retryBaseMs` | `number`                           |       ❌ |   `400` | Base retry delay (exponential backoff)           |
+| `endpoint`    | `string`                           |       ❌ |  hosted | Full ingest URL (self-hosting, staging, local)   |
 | `projectId`   | `string` (Guid)                    |       ❌ |       — | Deprecated and ignored — see below               |
 
 `projectId` no longer does anything and is no longer required. The ingest resolves the owning project from `botId` itself and deliberately refuses to trust a caller-supplied project id, so passing one only ever looked like it mattered. The field is still accepted so existing code keeps compiling.
@@ -60,11 +61,78 @@ Nothing from `initData` is re-sent: the user, chat type, chat instance and start
 
 Enable a subset with an object, e.g. `auto: { page: true, tg: true }`.
 
+### Frameworks
+
+`init()` is safe to call during a server render: it detects the absence of a DOM, skips every listener, and hands back a client whose methods are inert. Nothing needs a `typeof window` guard at the call site. The browser instance created during hydration is the one that records.
+
+What still matters is *where* you call it, because a Mini App only has `initData` in the browser.
+
+**Plain JS** — the IIFE bundle exposes `window.MetrioxTG`; see the snippet above.
+
+**React / Next.js** — the provider handles it; on the server it renders without creating a client.
+
+```jsx
+import { MetrioxProvider } from "metriox-javascript/react";
+
+<MetrioxProvider config={{ botId: "<BOT_ID>", auth: () => ({ initData: window.Telegram?.WebApp?.initData || "" }) }} />;
+```
+
+In the App Router, put it in a `"use client"` component.
+
+**Vue / Nuxt**
+
+```js
+import { onMounted } from "vue";
+import { init } from "metriox-javascript";
+
+onMounted(() => {
+  const mx = init({ botId: "<BOT_ID>", auth: () => ({ initData: window.Telegram?.WebApp?.initData || "" }), auto: true });
+});
+```
+
+**Svelte / SvelteKit**
+
+```js
+import { onMount } from "svelte";
+import { init } from "metriox-javascript";
+
+onMount(() => {
+  const mx = init({ botId: "<BOT_ID>", auth: () => ({ initData: window.Telegram?.WebApp?.initData || "" }), auto: true });
+  return () => mx.shutdown();
+});
+```
+
+**Angular**
+
+```ts
+import { Component, OnInit, OnDestroy } from "@angular/core";
+import { init, type MetrioxClient } from "metriox-javascript";
+
+@Component({ selector: "app-root", template: "" })
+export class AppComponent implements OnInit, OnDestroy {
+  private mx?: MetrioxClient;
+
+  ngOnInit() {
+    this.mx = init({ botId: "<BOT_ID>", auth: () => ({ initData: window.Telegram?.WebApp?.initData || "" }), auto: true });
+  }
+
+  ngOnDestroy() {
+    this.mx?.shutdown();
+  }
+}
+```
+
 ### Delivery
 
 A batch is retried on network failure, `408`, `429` and any `5xx`. Any other `4xx` is a verdict the batch cannot pass, so it is dropped rather than re-queued — retrying it forever would hold back every event behind it.
 
 A request is also bounded by size, not just by `maxBatch`: browsers cap a `keepalive` body at 64KB and reject anything larger outright, and `keepalive` is what lets the flush on app close finish at all. Events that do not fit go back to the front of the queue and leave in the next request, so a batch may be smaller than `maxBatch` when properties are large.
+
+Events are POSTed to Metriox's hosted ingest unless `endpoint` says otherwise:
+
+```js
+init({ botId: "<BOT_ID>", auth, endpoint: "https://ingest.example.com/tg/webapp" });
+```
 
 ---
 
