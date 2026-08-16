@@ -13,7 +13,13 @@ on:
   release:
     types: [published]
   push:
-    tags: ["v*"]
+    # Both spellings, because both are in use here. A `v*`-only filter silently ignores a bare
+    # `2.0.0` tag — no run, no warning, nothing in the Actions tab to explain the silence, since a
+    # trigger that does not match produces no record at all. The version check below strips the
+    # optional `v`, so either form is handled identically from there on.
+    tags:
+      - "v[0-9]*"
+      - "[0-9]*"
   workflow_dispatch:
 
 # Publishing the same version twice is an error, and a GitHub Release that creates its own tag fires

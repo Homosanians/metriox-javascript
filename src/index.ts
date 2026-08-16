@@ -98,7 +98,7 @@ const SDK_NAME = "metriox-tg-webapp";
 
 // Must track package.json. The server promotes this into $source.sdk_version precisely so a bad
 // rollout is diagnosable from the data, which only works if the number moves when the wire does.
-const SDK_VERSION = "0.2.0";
+const SDK_VERSION = "2.0.0";
 
 const DEFAULTS = {
   flushMs: 5000,
