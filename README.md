@@ -64,6 +64,8 @@ Enable a subset with an object, e.g. `auto: { page: true, tg: true }`.
 
 A batch is retried on network failure, `408`, `429` and any `5xx`. Any other `4xx` is a verdict the batch cannot pass, so it is dropped rather than re-queued — retrying it forever would hold back every event behind it.
 
+A request is also bounded by size, not just by `maxBatch`: browsers cap a `keepalive` body at 64KB and reject anything larger outright, and `keepalive` is what lets the flush on app close finish at all. Events that do not fit go back to the front of the queue and leave in the next request, so a batch may be smaller than `maxBatch` when properties are large.
+
 ---
 
 ### Serializing an inline keyboard
