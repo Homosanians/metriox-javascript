@@ -198,6 +198,21 @@ export function mergeAuto(auto: AutoOptions) {
 // WebApp / browser context
 // =========================
 
+/**
+ * True when there is a browser to instrument.
+ *
+ * Next, Nuxt, SvelteKit and Angular Universal all evaluate the module and run component setup on
+ * the server first, where neither global exists. `init()` used to attach its unload listeners
+ * unconditionally, so it threw a ReferenceError on every one of them — the SDK could not be called
+ * from a component at all, only from inside an already-mounted callback.
+ *
+ * The failure was easy to miss because it happens during render: the framework reports its own
+ * hydration error, and the SDK does not appear in the stack a developer reads first.
+ */
+export function hasDom(): boolean {
+  return typeof window !== "undefined" && typeof document !== "undefined";
+}
+
 /** The Telegram bridge, or undefined — the SDK also loads in a plain browser and must not throw. */
 function tgWebApp(): any {
   return (globalThis as any).Telegram?.WebApp;
@@ -790,6 +805,15 @@ export function init(config: Config): MetrioxClient {
   }
 
   async function flush() {
+    // Delivery reads location (same-origin test) and navigator (beacon), and there is no signed
+    // initData on a server anyway — Telegram only hands it to the browser. Anything recorded during
+    // a render belongs to a realm that cannot deliver it, so it is dropped rather than queued for a
+    // send that will never come.
+    if (!hasDom()) {
+      state.queue.length = 0;
+      return;
+    }
+
     if (!state.alive || state.flushing || !state.queue.length) return;
     state.flushing = true;
 
@@ -857,6 +881,13 @@ export function init(config: Config): MetrioxClient {
       state.cleanupFns = [];
     },
   };
+
+  // Everything below needs a browser. On a server render there is nothing to listen to and no user
+  // session to attribute, so the client is handed back inert rather than half-built: the caller can
+  // still hold it and call track() on it, and the client-side instance records for real after
+  // hydration. Note this must precede attachAuto — that is where `auto: true` reads location and
+  // document, which is the form a Nuxt or SvelteKit page is most likely to be written in.
+  if (!hasDom()) return client;
 
   if (opts.auto) {
     state.cleanupFns.push(attachAuto(client, opts.auto));

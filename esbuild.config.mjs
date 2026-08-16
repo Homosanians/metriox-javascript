@@ -1,8 +1,15 @@
 /** @format */
 
 import esbuild from "esbuild";
+import { rmSync } from "node:fs";
 
 const watch = process.argv.includes("--watch");
+
+// Start from an empty dist. Without this the directory only accumulates: declarations for sources
+// that were since renamed or excluded stay behind and get published, which is how four *.test.d.ts
+// files ended up inside the package. Skipped under --watch so a rebuild does not delete files out
+// from under a running dev server.
+if (!watch) rmSync("dist", { recursive: true, force: true });
 
 const common = {
   bundle: true,

@@ -12,13 +12,17 @@
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.esm.js",
       "default": "./dist/index.esm.js"
     },
     "./react": {
-      "import": "./dist/react/index.esm.js"
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.esm.js",
+      "default": "./dist/react/index.esm.js"
     },
-    "./iife": "./dist/metriox-tg-webapp.min.js"
+    "./iife": "./dist/metriox-tg-webapp.min.js",
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -28,12 +32,17 @@
   "peerDependencies": {
     "react": ">=17"
   },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
   "scripts": {
     "dev": "node esbuild.config.mjs --watch",
     "lint": "eslint .",
     "test": "vitest --run",
     "typecheck": "tsc --noEmit",
-    "build": "node esbuild.config.mjs && tsc --emitDeclarationOnly --declaration --outDir dist",
+    "build": "node esbuild.config.mjs && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --outDir dist",
     "build:debug": "node esbuild.config.mjs",
     "build:test": "npm run build && npm run test && npm run typecheck",
     "deploy:npm": "npm publish --access public"
