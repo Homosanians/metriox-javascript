@@ -67,6 +67,14 @@ export interface Config {
    * derived server-side from the signed string, so sending them again would only cost bytes.
    */
   context?: boolean;
+
+  /**
+   * Where events are POSTed. Defaults to Metriox's hosted ingest, so nobody needs to set it.
+   *
+   * Point it at a self-hosted or staging ingest, or at a local instance while developing. It must
+   * be the full URL of the WebApp endpoint, not just an origin.
+   */
+  endpoint?: string;
 }
 
 export interface MetrioxClient {
@@ -84,7 +92,8 @@ export interface MetrioxClient {
 // =========================
 // Constants / defaults
 // =========================
-const ENDPOINT = "https://ingest.metriox.com/tg/webapp"; // hard-coded
+/** Metriox's hosted ingest. Override per-client with `Config.endpoint`. */
+export const DEFAULT_ENDPOINT = "https://ingest.metriox.com/tg/webapp";
 const SDK_NAME = "metriox-tg-webapp";
 
 // Must track package.json. The server promotes this into $source.sdk_version precisely so a bad
@@ -515,13 +524,13 @@ export function classifyStatus(status: number): SendOutcome {
   return "retry";
 }
 
-async function sendRequest(payload: string, retryCount: number, retryBaseMs: number): Promise<SendOutcome> {
+async function sendRequest(payload: string, endpoint: string, retryCount: number, retryBaseMs: number): Promise<SendOutcome> {
   // Only beacon on same-origin to avoid CORS credential quirks
-  if (isSameOrigin(ENDPOINT)) {
+  if (isSameOrigin(endpoint)) {
     try {
       if (navigator.sendBeacon) {
         const blob = new Blob([payload], { type: "application/json" });
-        const ok = navigator.sendBeacon(ENDPOINT, blob);
+        const ok = navigator.sendBeacon(endpoint, blob);
         if (ok) return "sent";
       }
     } catch {}
@@ -534,7 +543,7 @@ async function sendRequest(payload: string, retryCount: number, retryBaseMs: num
 
   for (let attempt = 0; attempt <= retryCount; attempt++) {
     try {
-      const res = await fetch(ENDPOINT, {
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: payload,
@@ -730,6 +739,7 @@ export function init(config: Config): MetrioxClient {
     retryCount: config.retryCount ?? DEFAULTS.retryCount,
     auto: config.auto ?? DEFAULTS.auto,
     context: config.context ?? DEFAULTS.context,
+    endpoint: config.endpoint || DEFAULT_ENDPOINT,
   };
 
   const state = {
@@ -840,7 +850,7 @@ export function init(config: Config): MetrioxClient {
         payload = serialize(events);
       }
 
-      const outcome = await sendRequest(payload, opts.retryCount, opts.retryBaseMs);
+      const outcome = await sendRequest(payload, opts.endpoint, opts.retryCount, opts.retryBaseMs);
 
       // "drop" means the server gave a verdict this batch can never pass — re-queueing it would
       // block every later event behind a batch that will fail identically forever.
