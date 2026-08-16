@@ -11,7 +11,6 @@
     <script src="../dist/metriox-tg-webapp.min.js"></script>
     <script>
       const mx = MetrioxTG.init({
-        projectId: "<YOUR_PROJECT_ID>",
         botId: "<YOUR_BOT_ID>",
 
         auth: () => ({ initData: window.Telegram?.WebApp?.initData || "" }),
@@ -19,6 +18,7 @@
       });
 
       mx.track("hello", { x: 1, ok: true, s: "test" });
+      mx.track("purchase_completed", { price: 299 }, { type: "payment" });
       mx.flush();
     </script>
   </body>

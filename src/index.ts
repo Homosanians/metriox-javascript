@@ -5,11 +5,51 @@
 // =========================
 // Types
 // =========================
-export type AutoOptionObject = { page?: boolean; nav?: boolean; clicks?: boolean; forms?: boolean; errors?: boolean };
+export type AutoOptionObject = {
+  page?: boolean;
+  nav?: boolean;
+  clicks?: boolean;
+  forms?: boolean;
+  errors?: boolean;
+  /** Telegram WebApp lifecycle events (buttons, invoices, theme/viewport, activation). */
+  tg?: boolean;
+};
 export type AutoOptions = boolean | AutoOptionObject;
 
+/**
+ * The canonical `$event.type` vocabulary, mirroring the server's `EventVocabulary.Type`. Anything
+ * outside this set is coerced to `platform` by the ingest gate, which also raises an
+ * `event_type_unknown` warning on every event that carries it — this SDK used to ship `"custom"`
+ * and `"page"`, and is named in the platform's own contract audit (A7) for exactly that.
+ */
+export type EventType = "message" | "interaction" | "payment" | "membership" | "business" | "poll" | "reaction" | "boost" | "platform";
+
+export const EVENT_TYPES: readonly EventType[] = [
+  "message",
+  "interaction",
+  "payment",
+  "membership",
+  "business",
+  "poll",
+  "reaction",
+  "boost",
+  "platform",
+];
+
+/** Coerces a client-supplied type the same way the server does, so nothing changes on arrival. */
+export function coerceEventType(type?: string): EventType {
+  return (EVENT_TYPES as readonly string[]).includes(type as string) ? (type as EventType) : "platform";
+}
+
 export interface Config {
-  projectId: string;
+  /**
+   * Optional, and ignored by the ingest: the server resolves the owning project from `botId` and
+   * deliberately refuses to trust a caller-supplied project id (cross-project write / billing
+   * bypass). Kept so existing call sites keep compiling.
+   *
+   * @deprecated Has no effect on where events land.
+   */
+  projectId?: string;
   botId: string;
   // auth may be an object (sync) or a function that returns either an object or a Promise
   auth?: { initData?: string } | (() => { initData?: string } | Promise<{ initData?: string }>);
@@ -19,10 +59,22 @@ export interface Config {
   retryBaseMs?: number;
   retryCount?: number;
   auto?: AutoOptions;
+  /**
+   * Attach the WebApp/browser context block (platform, client version, viewport, locale, session)
+   * to every event. On by default — without it an event cannot be segmented by device or client.
+   *
+   * Nothing here duplicates initData: the user, chat type, chat instance and start param are
+   * derived server-side from the signed string, so sending them again would only cost bytes.
+   */
+  context?: boolean;
 }
 
 export interface MetrioxClient {
-  track(name: string, props?: Record<string, any>, options?: { text?: string }): void;
+  /**
+   * Records a custom business event. `type` is the canonical `$event.type` category — omit it and
+   * the event is recorded as `platform`, which is also what the server coerces an unknown value to.
+   */
+  track(name: string, props?: Record<string, any>, options?: { text?: string; type?: EventType }): void;
   page(name: string, props?: Record<string, any>): void;
   interaction(name: string, props?: Record<string, any>): void;
   flush(): Promise<void>;
@@ -34,7 +86,10 @@ export interface MetrioxClient {
 // =========================
 const ENDPOINT = "https://ingest.metriox.com/tg/webapp"; // hard-coded
 const SDK_NAME = "metriox-tg-webapp";
-const SDK_VERSION = "1.0.0"; // keep in sync with package.json if you want
+
+// Must track package.json. The server promotes this into $source.sdk_version precisely so a bad
+// rollout is diagnosable from the data, which only works if the number moves when the wire does.
+const SDK_VERSION = "0.2.0";
 
 const DEFAULTS = {
   flushMs: 5000,
@@ -43,6 +98,7 @@ const DEFAULTS = {
   retryBaseMs: 400,
   retryCount: 2,
   auto: false,
+  context: true,
 };
 
 // =========================
@@ -126,9 +182,103 @@ export function splitProps(props?: Record<string, any>) {
 }
 
 export function mergeAuto(auto: AutoOptions) {
-  if (auto === true) return { page: true, nav: true, clicks: true, forms: true, errors: true };
-  if (!auto) return { page: false, nav: false, clicks: false, forms: false, errors: false };
-  return { page: !!auto.page, nav: !!auto.nav, clicks: !!auto.clicks, forms: !!auto.forms, errors: !!auto.errors };
+  if (auto === true) return { page: true, nav: true, clicks: true, forms: true, errors: true, tg: true };
+  if (!auto) return { page: false, nav: false, clicks: false, forms: false, errors: false, tg: false };
+  return {
+    page: !!auto.page,
+    nav: !!auto.nav,
+    clicks: !!auto.clicks,
+    forms: !!auto.forms,
+    errors: !!auto.errors,
+    tg: !!auto.tg,
+  };
+}
+
+// =========================
+// WebApp / browser context
+// =========================
+
+/** The Telegram bridge, or undefined — the SDK also loads in a plain browser and must not throw. */
+function tgWebApp(): any {
+  return (globalThis as any).Telegram?.WebApp;
+}
+
+function safe<T>(read: () => T): T | undefined {
+  try {
+    return read();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Context that cannot change during a launch: which client, which device, which session.
+ *
+ * Key naming here is load-bearing. Since the ingest started stamping `EventOrigin = "platform"` on
+ * this endpoint (audit A3) the promote-shim is *live* on WebApp events — a property literally named
+ * `tg.<field>` gets lifted into the reserved `$tg` section whenever `<field>` is canonical. That is
+ * a trap for exactly this data: `$tg.chat_type` already means *the message chat's* type, so a
+ * WebApp key of that name would silently conflate two different fields. The server's own registry
+ * keeps them apart as `webapp_chat_type`, and nothing below uses a `tg.` prefix for the same
+ * reason — `tg_` is an ordinary custom key and stays at the top level.
+ *
+ * Every number is an integer on purpose. The WebApp wire contract carries string, long and bool
+ * buckets only (`WebAppEvent` has no `PropsFloat`, and the mapper hardcodes it to null), so a
+ * fractional value would be filed as a string and stop being aggregatable. Device pixel ratio is
+ * therefore scaled by 100 rather than rounded away — 1.5 and 2.0 are different devices.
+ */
+export function collectStaticContext(sessionId: string): Record<string, any> {
+  const wa = tgWebApp();
+  const nav: any = (globalThis as any).navigator;
+  const scr: any = (globalThis as any).screen;
+
+  const ctx: Record<string, any> = { session_id: sessionId };
+
+  if (wa) {
+    ctx.tg_platform = wa.platform;
+    ctx.tg_client_version = wa.version;
+    ctx.tg_color_scheme = wa.colorScheme;
+  }
+
+  if (nav) ctx.language = nav.language;
+  ctx.timezone = safe(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
+  ctx.referrer = safe(() => document.referrer) || undefined;
+
+  if (scr) {
+    ctx.screen_w = scr.width;
+    ctx.screen_h = scr.height;
+  }
+
+  const dpr = safe(() => (globalThis as any).devicePixelRatio);
+  if (typeof dpr === "number" && dpr > 0) ctx.dpr_x100 = Math.round(dpr * 100);
+
+  return ctx;
+}
+
+/**
+ * Context that moves while the app is open. Read at enqueue time rather than at flush time, so a
+ * batched event reports the viewport it actually happened in.
+ */
+export function collectDynamicContext(): Record<string, any> {
+  const wa = tgWebApp();
+  const ctx: Record<string, any> = {};
+
+  ctx.path = safe(() => location.pathname + location.search);
+
+  const w = safe(() => (globalThis as any).innerWidth);
+  const h = safe(() => (globalThis as any).innerHeight);
+  if (typeof w === "number") ctx.viewport_w = Math.round(w);
+  if (typeof h === "number") ctx.viewport_h = Math.round(h);
+
+  if (wa) {
+    if (typeof wa.viewportHeight === "number") ctx.tg_viewport_h = Math.round(wa.viewportHeight);
+    if (typeof wa.isExpanded === "boolean") ctx.tg_is_expanded = wa.isExpanded;
+    // Mini Apps 8.0+; absent on older clients, and absent is the honest answer there.
+    if (typeof wa.isFullscreen === "boolean") ctx.tg_is_fullscreen = wa.isFullscreen;
+    if (typeof wa.isActive === "boolean") ctx.tg_is_active = wa.isActive;
+  }
+
+  return ctx;
 }
 
 // =========================
@@ -157,9 +307,14 @@ export interface TgInlineKeyboardMarkup {
  * itself. They were single letters (`t`/`d`/`u`) before 2026-07-26 — Metriox still accepts that spelling
  * on read, so an older SDK build keeps working, but new sends should use this one.
  *
- * Attach the result as `tg.inline_keyboard` on a *platform-origin* Telegram message event, alongside
- * `tg.from_is_bot: true` (e.g. a Node bot reporting its own send). Note the WebApp `track()` path
- * emits custom-origin events, which the ingest does not promote into the reserved `$tg` section.
+ * Attach the result as `tg.inline_keyboard` on a Telegram message event, alongside
+ * `tg.from_is_bot: true` (e.g. a Node bot reporting its own send).
+ *
+ * This works from a WebApp too. It did not use to: the ingest promotes reserved `tg.*` keys into
+ * `$tg` only for platform-origin events, and the WebApp mapper wrote its own `"webapp"` literal
+ * that nothing downstream recognised, so these events were classified as custom and never promoted
+ * (audit A3). The mapper now stamps the shared `"platform"` literal on every WebApp event, so a
+ * `tg.inline_keyboard` sent from here lands in `$tg` like any other producer's.
  */
 export function serializeInlineKeyboard(markup?: TgInlineKeyboardMarkup | null): string | null {
   const rows = markup?.inline_keyboard;
@@ -199,8 +354,8 @@ export const MAX_MESSAGE_ENTITIES = 64;
  *
  * Telegram never sends formatted text — it sends plain text plus these offset/length spans — so
  * without them a message's formatting cannot be recovered at all, only counted. Attach the result as
- * `tg.entities` on a *platform-origin* Telegram message event, the same way as
- * {@link serializeInlineKeyboard}.
+ * `tg.entities` on a Telegram message event, the same way as {@link serializeInlineKeyboard} — and,
+ * as noted there, WebApp events reach `$tg` too now.
  *
  * Keys are the Bot API's own `MessageEntity` field names (`type`/`offset`/`length`/`url`); they were
  * single letters (`t`/`o`/`l`/`u`) before 2026-07-26, which Metriox still reads.
@@ -310,14 +465,33 @@ function isSameOrigin(url: string) {
   }
 }
 
-async function sendRequest(body: any, retryCount: number, retryBaseMs: number) {
+/** What the caller should do with a batch after an attempt. */
+export type SendOutcome = "sent" | "retry" | "drop";
+
+/**
+ * Classifies an HTTP status the way the ingest means it.
+ *
+ * The server returns 4xx specifically so a permanently bad batch stops being retried — its own
+ * comment says so where it rejects every event in a request (audit A2/A8). This SDK ignored that
+ * and re-queued on *any* non-2xx, so an unauthorized or over-quota batch was re-sent until it aged
+ * out of the queue, taking newer events with it. 408 and 429 are the two 4xx that genuinely mean
+ * "later", so they keep their retry.
+ */
+export function classifyStatus(status: number): SendOutcome {
+  if (status >= 200 && status < 300) return "sent";
+  if (status === 408 || status === 429) return "retry";
+  if (status >= 400 && status < 500) return "drop";
+  return "retry";
+}
+
+async function sendRequest(body: any, retryCount: number, retryBaseMs: number): Promise<SendOutcome> {
   // Only beacon on same-origin to avoid CORS credential quirks
   if (isSameOrigin(ENDPOINT)) {
     try {
       if (navigator.sendBeacon) {
         const blob = new Blob([JSON.stringify(body)], { type: "application/json" });
         const ok = navigator.sendBeacon(ENDPOINT, blob);
-        if (ok) return true;
+        if (ok) return "sent";
       }
     } catch {}
   }
@@ -331,16 +505,52 @@ async function sendRequest(body: any, retryCount: number, retryBaseMs: number) {
         keepalive: true,
         credentials: "omit",
       });
-      if (res.ok) return true;
-    } catch {}
+
+      const outcome = classifyStatus(res.status);
+      if (outcome !== "retry") return outcome;
+    } catch {
+      // Network-level failure: no verdict from the server, so it is worth another attempt.
+    }
     if (attempt < retryCount) await sleep(retryBaseMs * Math.pow(2, attempt));
   }
-  return false;
+  return "retry";
 }
 
 // =========================
 // Auto instrumentation
 // =========================
+
+/**
+ * The Telegram WebApp lifecycle events worth recording, the canonical category each belongs to, and
+ * the handler-argument fields kept from it.
+ *
+ * `keep` is an allow-list rather than a filter because two of these events hand the app content the
+ * user did not choose to send us: `qrTextReceived` and `clipboardTextReceived` both carry a `data`
+ * field holding scanned or pasted text. That the scan happened is analytics; its contents are the
+ * user's. They are recorded with no payload at all.
+ *
+ * Unknown events are simply absent on older clients — `onEvent` accepts the subscription and never
+ * fires, which is the correct outcome and needs no version gate.
+ */
+const TG_LIFECYCLE: Array<{ event: string; name: string; type: EventType; keep?: string[] }> = [
+  { event: "mainButtonClicked", name: "tg_main_button_clicked", type: "interaction" },
+  { event: "secondaryButtonClicked", name: "tg_secondary_button_clicked", type: "interaction" },
+  { event: "backButtonClicked", name: "tg_back_button_clicked", type: "interaction" },
+  { event: "settingsButtonClicked", name: "tg_settings_button_clicked", type: "interaction" },
+  { event: "popupClosed", name: "tg_popup_closed", type: "interaction", keep: ["button_id"] },
+  { event: "writeAccessRequested", name: "tg_write_access_requested", type: "interaction", keep: ["status"] },
+  { event: "contactRequested", name: "tg_contact_requested", type: "interaction", keep: ["status"] },
+  { event: "qrTextReceived", name: "tg_qr_text_received", type: "interaction" },
+  { event: "clipboardTextReceived", name: "tg_clipboard_text_received", type: "interaction" },
+  { event: "invoiceClosed", name: "tg_invoice_closed", type: "payment", keep: ["status"] },
+  { event: "themeChanged", name: "tg_theme_changed", type: "platform" },
+  { event: "viewportChanged", name: "tg_viewport_changed", type: "platform" },
+  { event: "fullscreenChanged", name: "tg_fullscreen_changed", type: "platform" },
+  { event: "fullscreenFailed", name: "tg_fullscreen_failed", type: "platform", keep: ["error"] },
+  { event: "activated", name: "tg_activated", type: "platform" },
+  { event: "deactivated", name: "tg_deactivated", type: "platform" },
+];
+
 function attachAuto(client: MetrioxClient, autoOptions: AutoOptions) {
   const enabled = mergeAuto(autoOptions);
   const cleanups: Array<() => void> = [];
@@ -411,6 +621,41 @@ function attachAuto(client: MetrioxClient, autoOptions: AutoOptions) {
     });
   }
 
+  if (enabled.tg) {
+    const wa = tgWebApp();
+
+    if (typeof wa?.onEvent === "function") {
+      for (const spec of TG_LIFECYCLE) {
+        const handler = (arg?: any) => {
+          // The viewport reports every intermediate frame of an animated resize. Only the settled
+          // value describes a state the user was actually in; the rest is one gesture billed many
+          // times over.
+          if (spec.event === "viewportChanged" && arg && arg.isStateStable === false) return;
+
+          const props: Record<string, any> = {};
+          for (const key of spec.keep || []) {
+            const value = arg?.[key];
+            if (value != null) props[key] = value;
+          }
+
+          client.track(spec.name, props, { type: spec.type });
+        };
+
+        try {
+          wa.onEvent(spec.event, handler);
+        } catch {
+          continue;
+        }
+
+        cleanups.push(() => {
+          try {
+            wa.offEvent?.(spec.event, handler);
+          } catch {}
+        });
+      }
+    }
+  }
+
   return function cleanup() {
     for (const fn of cleanups) {
       try {
@@ -424,7 +669,9 @@ function attachAuto(client: MetrioxClient, autoOptions: AutoOptions) {
 // Client init
 // =========================
 export function init(config: Config): MetrioxClient {
-  if (!config?.projectId || !config?.botId) throw new Error("projectId and botId required");
+  // projectId is not checked: the ingest derives the project from the bot and refuses to trust a
+  // caller-supplied one, so demanding it here only blocked correct integrations.
+  if (!config?.botId) throw new Error("botId required");
 
   const opts = {
     flushMs: config.flushMs ?? DEFAULTS.flushMs,
@@ -433,10 +680,10 @@ export function init(config: Config): MetrioxClient {
     retryBaseMs: config.retryBaseMs ?? DEFAULTS.retryBaseMs,
     retryCount: config.retryCount ?? DEFAULTS.retryCount,
     auto: config.auto ?? DEFAULTS.auto,
+    context: config.context ?? DEFAULTS.context,
   };
 
   const state = {
-    projectId: config.projectId,
     botId: config.botId,
     auth: config.auth,
     queue: [] as any[],
@@ -444,12 +691,24 @@ export function init(config: Config): MetrioxClient {
     flushing: false,
     alive: true,
     cleanupFns: [] as Array<() => void>,
+    // Identifies this launch. The server derives a session id too, but per user per *calendar day*
+    // — which cannot separate two openings of the app, and that is the question a Mini App is
+    // usually asked.
+    sessionId: uuid(),
+    seq: 0,
   };
 
+  const staticContext = opts.context ? collectStaticContext(state.sessionId) : null;
+
   function baseProps(extra?: Record<string, any>) {
-    const p = Object.assign({}, extra);
-    (p as any).sdk = SDK_NAME;
-    (p as any).sdk_version = SDK_VERSION;
+    const p: Record<string, any> = staticContext
+      ? Object.assign({}, staticContext, collectDynamicContext(), extra)
+      : Object.assign({}, extra);
+
+    if (staticContext) p.seq = state.seq++;
+
+    p.sdk = SDK_NAME;
+    p.sdk_version = SDK_VERSION;
     return p;
   }
 
@@ -474,10 +733,10 @@ export function init(config: Config): MetrioxClient {
     else scheduleFlush();
   }
 
-  function pushEvent(eventType: string, eventName: string, props?: Record<string, any>, text?: string) {
+  function pushEvent(eventType: EventType, eventName: string, props?: Record<string, any>, text?: string) {
     enqueue({
       EventId: uuid(),
-      EventType: String(eventType),
+      EventType: eventType,
       EventName: String(eventName),
       EventDate: new Date().toISOString(),
       Text: text,
@@ -504,8 +763,8 @@ export function init(config: Config): MetrioxClient {
       const events = state.queue.splice(0, opts.maxBatch);
       const initData = await resolveInitData();
 
+      // No ProjectId: the endpoint has no such field and resolves the project from the bot.
       const body = {
-        ProjectId: state.projectId,
         BotId: state.botId,
         Auth: {
           InitData: initData || "",
@@ -513,9 +772,11 @@ export function init(config: Config): MetrioxClient {
         Events: events,
       };
 
-      const ok = await sendRequest(body, opts.retryCount, opts.retryBaseMs);
+      const outcome = await sendRequest(body, opts.retryCount, opts.retryBaseMs);
 
-      if (!ok) {
+      // "drop" means the server gave a verdict this batch can never pass — re-queueing it would
+      // block every later event behind a batch that will fail identically forever.
+      if (outcome === "retry") {
         state.queue = events.concat(state.queue);
         scheduleFlush();
       } else if (state.queue.length) {
@@ -527,11 +788,13 @@ export function init(config: Config): MetrioxClient {
   }
 
   const client: MetrioxClient = {
+    // "custom" and "page" were not $event.type values — the server coerced both to "platform" and
+    // attached an event_type_unknown warning to every single event. Send what it stores.
     track(name, props, options) {
-      pushEvent("custom", name, props, options?.text);
+      pushEvent(coerceEventType(options?.type), name, props, options?.text);
     },
     page(name, props) {
-      pushEvent("page", name, props);
+      pushEvent("platform", name, props);
     },
     interaction(name, props) {
       pushEvent("interaction", name, props);
@@ -561,6 +824,13 @@ export function init(config: Config): MetrioxClient {
   document.addEventListener("visibilitychange", onVis);
   state.cleanupFns.push(() => document.removeEventListener("visibilitychange", onVis));
 
+  // visibilitychange alone loses the last batch on the platforms that matter most here: a Mini App
+  // closed from the Telegram UI can be torn down without ever reporting hidden, and iOS WebViews
+  // are the usual offender. pagehide fires in that path.
+  const onPageHide = () => client.flush();
+  window.addEventListener("pagehide", onPageHide);
+  state.cleanupFns.push(() => window.removeEventListener("pagehide", onPageHide));
+
   return client;
 }
 
@@ -571,4 +841,5 @@ export function init(config: Config): MetrioxClient {
   serializeMessageEntities,
   telegramEventId,
   tgEventKeys,
+  EVENT_TYPES,
 };

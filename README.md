@@ -4,17 +4,20 @@
 
 ## Options
 
-| Option        | Type                               | Required | Default | Description                            |
-| ------------- | ---------------------------------- | -------: | ------: | -------------------------------------- |
-| `projectId`   | `string` (Guid)                    |       ✅ |       — | Your Metriox project id                |
-| `botId`       | `string` (Guid)                    |       ✅ |       — | Your bot id                            |
-| `auth`        | `() => ({initData}) \| {initData}` |       ✅ |       — | Telegram auth payload provider         |
-| `auto`        | `boolean \| object`                |       ❌ | `false` | Enable automatic tracking              |
-| `flushMs`     | `number`                           |       ❌ |  `5000` | Flush interval in ms                   |
-| `maxBatch`    | `number`                           |       ❌ |    `20` | Max events per request                 |
-| `maxQueue`    | `number`                           |       ❌ |   `500` | Max queued events in memory            |
-| `retryCount`  | `number`                           |       ❌ |     `2` | Fetch retry attempts                   |
-| `retryBaseMs` | `number`                           |       ❌ |   `400` | Base retry delay (exponential backoff) |
+| Option        | Type                               | Required | Default | Description                                      |
+| ------------- | ---------------------------------- | -------: | ------: | ------------------------------------------------ |
+| `botId`       | `string` (Guid)                    |       ✅ |       — | Your bot id                                      |
+| `auth`        | `() => ({initData}) \| {initData}` |       ✅ |       — | Telegram auth payload provider                   |
+| `auto`        | `boolean \| object`                |       ❌ | `false` | Enable automatic tracking                        |
+| `context`     | `boolean`                          |       ❌ |  `true` | Attach the WebApp/browser context to every event |
+| `flushMs`     | `number`                           |       ❌ |  `5000` | Flush interval in ms                             |
+| `maxBatch`    | `number`                           |       ❌ |    `20` | Max events per request                           |
+| `maxQueue`    | `number`                           |       ❌ |   `500` | Max queued events in memory                      |
+| `retryCount`  | `number`                           |       ❌ |     `2` | Fetch retry attempts                             |
+| `retryBaseMs` | `number`                           |       ❌ |   `400` | Base retry delay (exponential backoff)           |
+| `projectId`   | `string` (Guid)                    |       ❌ |       — | Deprecated and ignored — see below               |
+
+`projectId` no longer does anything and is no longer required. The ingest resolves the owning project from `botId` itself and deliberately refuses to trust a caller-supplied project id, so passing one only ever looked like it mattered. The field is still accepted so existing code keeps compiling.
 
 ### Telegram WebApp
 
@@ -22,9 +25,7 @@
 <script src="https://cdn.jsdelivr.net/npm/metriox-javascript/dist/metriox-tg-webapp.min.js"></script>
 <script>
   const mx = window.MetrioxTG.init({
-    projectId: "<YOUR_PROJECT_ID>",
     botId: "<YOUR_BOT_ID>",
-
 
     auth: () => ({ initData: window.Telegram?.WebApp?.initData || "" }),
 
@@ -33,10 +34,35 @@
 
   mx.track("user_start", { appVersion: "prod/1.2.1", userCredits: 1999, boosterActive: true });
 
+  // A custom event may name its category; without one it is recorded as "platform"
+  mx.track("purchase_completed", { price: 299 }, { type: "payment" });
+
   // Force send immediately
   mx.flush();
 </script>
 ```
+
+### Event categories
+
+`track()` takes a canonical `$event.type` through `options.type`. The vocabulary is the server's, exported as `EVENT_TYPES`:
+
+`message`, `interaction`, `payment`, `membership`, `business`, `poll`, `reaction`, `boost`, `platform`
+
+Anything else — an omitted value included — is recorded as `platform`, which is exactly what the server does with a category it does not know. Up to 0.1.x this SDK sent `custom` and `page`, neither of which was ever a category, so every event arrived carrying an `event_type_unknown` warning.
+
+### What is collected automatically
+
+With `context: true` (the default) every event carries the launch and device context: `session_id`, `seq`, `tg_platform`, `tg_client_version`, `tg_color_scheme`, `tg_viewport_h`, `tg_is_expanded`, `tg_is_fullscreen`, `tg_is_active`, `path`, `referrer`, `language`, `timezone`, `screen_w`/`screen_h`, `viewport_w`/`viewport_h`, `dpr_x100`.
+
+Nothing from `initData` is re-sent: the user, chat type, chat instance and start param are derived server-side from the signed string, so the SDK spends no bytes on them.
+
+`auto: true` additionally records page views, SPA navigation, `data-mx` clicks, form submits, unhandled errors, and Telegram lifecycle events — main/secondary/back/settings button presses, popup and invoice results, and theme, viewport, fullscreen and activation changes. QR and clipboard callbacks are recorded as occurrences only; the scanned or pasted text is never sent.
+
+Enable a subset with an object, e.g. `auto: { page: true, tg: true }`.
+
+### Delivery
+
+A batch is retried on network failure, `408`, `429` and any `5xx`. Any other `4xx` is a verdict the batch cannot pass, so it is dropped rather than re-queued — retrying it forever would hold back every event behind it.
 
 ---
 
@@ -53,7 +79,7 @@ serializeInlineKeyboard({
 // => '[{"text":"Buy","callback_data":"buy"},{"text":"Docs","url":"https://metriox.com"}]'
 ```
 
-Send the result as `tg.inline_keyboard` on a **platform-origin** Telegram message event (alongside `tg.from_is_bot: true` so it renders as a bot → user message) — typically server-side, since the Bot API never reports a bot's own sends and the WebApp `track()` path emits custom-origin events. Returns `null` when there is nothing to record.
+Send the result as `tg.inline_keyboard` on a Telegram message event, alongside `tg.from_is_bot: true` so it renders as a bot → user message. This is usually done server-side, since the Bot API never reports a bot's own sends. It works from a WebApp too: WebApp events used to be classified as custom and skipped `$tg` promotion entirely, but the ingest now stamps them platform-origin like every other Telegram-derived event. Returns `null` when there is nothing to record.
 
 ---
 
@@ -86,7 +112,7 @@ import { MetrioxProvider, Metriox, LogOnMount, LogOnChange, useLogEvent } from "
 
 function App() {
   return (
-    <MetrioxProvider config={{ projectId: "p", botId: "b", auth: () => ({ initData: "" }) }} eventProperties={{ app: "my-app" }}>
+    <MetrioxProvider config={{ botId: "b", auth: () => ({ initData: "" }) }} eventProperties={{ app: "my-app" }}>
       <Main />
     </MetrioxProvider>
   );
@@ -115,7 +141,7 @@ import React from 'react';
 import type { Config } from 'metriox-javascript';
 import { MetrioxProvider, Metriox, useLogEvent } from 'metriox-javascript/react';
 
-const cfg: Config = { projectId: 'p', botId: 'b', auth: () => ({ initData: '' }) };
+const cfg: Config = { botId: 'b', auth: () => ({ initData: '' }) };
 
 <MetrioxProvider config={cfg} eventProperties={{ app: 'my-app' }}>
   <Metriox eventProperties={(inherited) => ({ ...inherited, scope: ['page'] })}>
