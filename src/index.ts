@@ -469,6 +469,22 @@ function isSameOrigin(url: string) {
 export type SendOutcome = "sent" | "retry" | "drop";
 
 /**
+ * Largest request body that may carry `keepalive`, with headroom under the browsers' 64KB cap.
+ *
+ * This matters more than it looks. `keepalive` is the only thing that lets a request outlive the
+ * page, and it is the *sole* mechanism available here: `sendBeacon` is skipped because the ingest
+ * is cross-origin, so the unload flush is a plain `fetch`. Over the cap the browser fails the
+ * request outright rather than trimming it — so without this bound, the flush that fires when a
+ * Mini App closes is precisely the one that silently loses its batch. A full 20-event batch of
+ * max-length string properties reaches ~90KB, which is not a hypothetical margin.
+ */
+export const MAX_KEEPALIVE_BYTES = 60 * 1024;
+
+function byteLength(value: string) {
+  return new TextEncoder().encode(value).length;
+}
+
+/**
  * Classifies an HTTP status the way the ingest means it.
  *
  * The server returns 4xx specifically so a permanently bad batch stops being retried — its own
@@ -484,25 +500,30 @@ export function classifyStatus(status: number): SendOutcome {
   return "retry";
 }
 
-async function sendRequest(body: any, retryCount: number, retryBaseMs: number): Promise<SendOutcome> {
+async function sendRequest(payload: string, retryCount: number, retryBaseMs: number): Promise<SendOutcome> {
   // Only beacon on same-origin to avoid CORS credential quirks
   if (isSameOrigin(ENDPOINT)) {
     try {
       if (navigator.sendBeacon) {
-        const blob = new Blob([JSON.stringify(body)], { type: "application/json" });
+        const blob = new Blob([payload], { type: "application/json" });
         const ok = navigator.sendBeacon(ENDPOINT, blob);
         if (ok) return "sent";
       }
     } catch {}
   }
 
+  // A body over the cap would be refused outright with keepalive set, so an oversized batch trades
+  // surviving unload for being delivered at all. The caller keeps batches under the limit, so this
+  // only engages for a single event that is too large to split.
+  const keepalive = byteLength(payload) <= MAX_KEEPALIVE_BYTES;
+
   for (let attempt = 0; attempt <= retryCount; attempt++) {
     try {
       const res = await fetch(ENDPOINT, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-        keepalive: true,
+        body: payload,
+        keepalive,
         credentials: "omit",
       });
 
@@ -623,14 +644,27 @@ function attachAuto(client: MetrioxClient, autoOptions: AutoOptions) {
 
   if (enabled.tg) {
     const wa = tgWebApp();
+    let lastViewportH: number | null = null;
 
     if (typeof wa?.onEvent === "function") {
       for (const spec of TG_LIFECYCLE) {
         const handler = (arg?: any) => {
-          // The viewport reports every intermediate frame of an animated resize. Only the settled
-          // value describes a state the user was actually in; the rest is one gesture billed many
-          // times over.
-          if (spec.event === "viewportChanged" && arg && arg.isStateStable === false) return;
+          // The viewport is the one subscription here that fires without the user doing anything,
+          // and it fires in bursts: every frame of an animated resize, then the settled value, and
+          // the same settled value again on the way back. Unfiltered, opening the keyboard once can
+          // enqueue a dozen events that each carry the full context block — enough to push the
+          // maxQueue eviction that drops the purchase event the customer actually cared about.
+          //
+          // Two filters, because they catch different things: isStateStable drops the intermediate
+          // frames of one gesture, and the height comparison drops a settled value we already
+          // reported. Only a viewport the user has not been in before is worth an event.
+          if (spec.event === "viewportChanged") {
+            if (arg && arg.isStateStable === false) return;
+
+            const h = typeof wa.viewportHeight === "number" ? Math.round(wa.viewportHeight) : null;
+            if (h !== null && h === lastViewportH) return;
+            lastViewportH = h;
+          }
 
           const props: Record<string, any> = {};
           for (const key of spec.keep || []) {
@@ -764,15 +798,25 @@ export function init(config: Config): MetrioxClient {
       const initData = await resolveInitData();
 
       // No ProjectId: the endpoint has no such field and resolves the project from the bot.
-      const body = {
-        BotId: state.botId,
-        Auth: {
-          InitData: initData || "",
-        },
-        Events: events,
-      };
+      const serialize = (batch: any[]) =>
+        JSON.stringify({
+          BotId: state.botId,
+          Auth: {
+            InitData: initData || "",
+          },
+          Events: batch,
+        });
 
-      const outcome = await sendRequest(body, opts.retryCount, opts.retryBaseMs);
+      // maxBatch counts events, which says nothing about bytes — 20 events carrying max-length
+      // string properties are far past what a keepalive request may hold. Hand the overflow back to
+      // the front of the queue instead of losing it, so it goes out in the next flush.
+      let payload = serialize(events);
+      while (events.length > 1 && byteLength(payload) > MAX_KEEPALIVE_BYTES) {
+        state.queue.unshift(events.pop()!);
+        payload = serialize(events);
+      }
+
+      const outcome = await sendRequest(payload, opts.retryCount, opts.retryBaseMs);
 
       // "drop" means the server gave a verdict this batch can never pass — re-queueing it would
       // block every later event behind a batch that will fail identically forever.

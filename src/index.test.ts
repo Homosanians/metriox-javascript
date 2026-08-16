@@ -2,7 +2,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as sdk from "./index";
-import { splitProps, mergeAuto, init, serializeInlineKeyboard, MAX_PROP_STRING_LEN, EVENT_TYPES, coerceEventType, classifyStatus } from "./index";
+import { splitProps, mergeAuto, init, serializeInlineKeyboard, MAX_PROP_STRING_LEN, MAX_KEEPALIVE_BYTES, EVENT_TYPES, coerceEventType, classifyStatus } from "./index";
 
 console.log("sdk keys", Object.keys(sdk));
 
@@ -166,6 +166,34 @@ describe("init & transport", () => {
     expect(sessions.size).toBe(1);
     expect(events.map((e: any) => e.PropsLong.seq)).toEqual([0, 1, 2, 3]);
     expect(events[0].PropsString.sdk).toBe("metriox-tg-webapp");
+  });
+
+  it("keeps a full batch inside the keepalive body limit", async () => {
+    // The unload flush rides on fetch(keepalive: true) — sendBeacon is skipped because the ingest
+    // is cross-origin — and browsers cap a keepalive body at 64KB, failing outright rather than
+    // degrading past it. A default-sized batch of worst-case events must stay under that, or the
+    // pagehide flush is exactly the one that silently drops.
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 202 });
+    (globalThis as any).fetch = mockFetch;
+
+    // 19, not the full 20: hitting maxBatch fires its own flush, and racing that would make the
+    // call indices below meaningless. 19 max-length events are ~86KB, well past the cap already.
+    const queued = 19;
+    const c = init({ botId: "b", auth: { initData: "x".repeat(512) } });
+    for (let i = 0; i < queued; i++) c.track("evt", { blob: "y".repeat(MAX_PROP_STRING_LEN) });
+
+    await c.flush();
+
+    const body = mockFetch.mock.calls[0][1].body;
+    expect(new TextEncoder().encode(body).length).toBeLessThanOrEqual(MAX_KEEPALIVE_BYTES);
+    expect(mockFetch.mock.calls[0][1].keepalive).toBe(true);
+
+    // The overflow is handed back, not dropped: what did not fit goes out on the next flush.
+    const sent = JSON.parse(body).Events.length;
+    expect(sent).toBeLessThan(queued);
+
+    await c.flush();
+    expect(JSON.parse(mockFetch.mock.calls[1][1].body).Events).toHaveLength(queued - sent);
   });
 
   it("re-queues a batch on 5xx and abandons it on a terminal 4xx", async () => {
